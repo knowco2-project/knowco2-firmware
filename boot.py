@@ -26,11 +26,8 @@ try:
     time.sleep(0.05)
 
     if override.value:
-        # Override held: leave USB storage enabled so the drive appears normally.
-        try:
-            storage.remount("/", readonly=False)
-        except Exception:
-            pass
+        # Override held: host (Mac/PC) gets write access by default. Do not remount.
+        pass
     else:
         # Default behavior: make sure the filesystem is writable, then hide USB storage.
         try:
