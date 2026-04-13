@@ -1,10 +1,11 @@
 # knowco2 firmware (AP portal + STA + mDNS)
 # Target: Adafruit Feather ESP32-S3 Reverse TFT (CircuitPython 9.2.9)
-# Version: RC-8  (consumer-safety + freeze-recovery hardening)
+# Version: RC-9  (sensor abstraction + maintainability refactor)
 # ----------------------------------------------------------------------
 # FEATURE SUMMARY
 # - Splash screen with centered logo bitmap and automatic cleanup.
-# - CO₂/temperature/humidity sensing with SCD4x (periodic measurement).
+# - CO₂/temperature/humidity sensing via pluggable SensorDriver layer.
+#   Default: Sensirion SCD4x.  Adding a new sensor = one new subclass.
 # - Three main display modes: text summary, big CO₂, and live graph.
 # - Graph history window with fixed/wide/auto scale, thresholds, and trend.
 # - Button controls: A toggles °C/°F, B cycles display mode, C toggles
@@ -18,26 +19,17 @@
 # - Memory monitor and status logging with throttling to avoid spam.
 # - Sensor CRC failure tracking, stale-sample watchdog, recovery logic,
 #   and MCU watchdog reset for hard stalls.
-# RC-8 CHANGES
-# - Persistent on-screen "SENSOR ERR" banner when sensor stops updating so
-#   the user is always informed — no silent freezes.
-# - Hard MCU reset after SENSOR_HARD_RESET_SEC (90 s) of no sensor data,
-#   independent of recovery-attempt counts.  Prevents devices from running
-#   indefinitely with a dead sensor.
-# - NTP retry throttle: attempts are limited to once per NTP_MIN_RETRY_S
-#   (60 s) when they fail, preventing the main loop from stalling on
-#   repeated NTP calls every iteration.
-# - STA reconnect cooldown (STA_RECONNECT_COOLDOWN_S = 60 s): consecutive
-#   wifi.radio.connect() calls are spaced out to prevent long blocking
-#   periods that can interfere with sensor polling.
-# - Hardware watchdog timeout raised to 20 s (from 12 s) to accommodate
-#   legitimate WiFi connect operations without spurious resets.
-# - Watchdog feed inserted in ensure_sta_connected() and scd_recover() so
-#   blocking I2C / WiFi ops don't trigger unwanted watchdog resets.
-# - Cloud session cleared on WiFi mode switch, preventing stale socket
-#   handles that could block cloud uploads after reconnect.
-# - log() function restored to actually print throttled output.
-# - SCD_SAMPLE_TIMEOUT raised to 30 s and SCD_MAX_RECOVERIES to 3.
+# RC-9 CHANGES (on top of RC-8)
+# - SensorDriver abstraction layer: hardware-specific sensor code is now
+#   isolated in SCD4xDriver.  The rest of the firmware talks to a generic
+#   `sensor` object.  New sensor types can be added by implementing
+#   SensorDriver and appending to _SENSOR_DRIVERS.
+# - init_sensor() auto-detects the first responding sensor on I²C.
+# - Calibration and recovery code go through the driver interface, removing
+#   direct adafruit_scd4x calls from business logic.
+# - Constants reorganised into named groups at the top of the file.
+# - Serial-number extraction moved into SCD4xDriver (removed init_scd_serial).
+# - No functional or control-flow changes vs RC-8.
 # ----------------------------------------------------------------------
 
 import time
@@ -249,58 +241,65 @@ def _safe_call(func, *args, **kwargs):
 
 # ======================================================================
 #  CONFIG & CONSTANTS
+#  All tuneable values live here, grouped by domain.
+#  Nothing below this block should contain a magic number.
 # ======================================================================
 
-SCD_MEASUREMENT_PERIOD = 5.0
-WINDOW_SECONDS = 300.0
+# ── Sensor / measurement ──────────────────────────────────────────────
+SCD_MEASUREMENT_PERIOD = 5.0             # seconds between CO₂ samples
+WINDOW_SECONDS         = 300.0           # graph history window length
 WINDOW_SAMPLES = int(WINDOW_SECONDS / SCD_MEASUREMENT_PERIOD) + 1
 
-TREND_DEADBAND = 10.0
+# Sensor watchdog & recovery (all times in seconds)
+SCD_SAMPLE_TIMEOUT           = 30.0  # stale data → trigger soft recovery
+SENSOR_FROZEN_WARN_SEC       = 30.0  # show persistent "SENSOR ERR" banner
+SENSOR_HARD_RESET_SEC        = 90.0  # force MCU reset (last resort)
+SCD_MAX_FAILS_BEFORE_RESET   = 3     # consecutive CRC errors before soft reset
+SCD_RESET_COOLDOWN_SEC       = 2.0   # min seconds between soft resets
+SCD_MAX_RECOVERIES_BEFORE_RESET = 3  # soft recoveries before MCU reset
+
+# Calibration parameter bounds
+ALTITUDE_MIN         = 0
+ALTITUDE_MAX         = 10_000  # metres
+PRESSURE_MIN_NONZERO = 400     # hPa
+PRESSURE_MAX         = 2_000   # hPa
+
+# ── Display / graph ───────────────────────────────────────────────────
+TREND_DEADBAND         = 10.0  # ppm dead-band for trend arrow
 TREND_LOOKBACK_SECONDS = 150.0
-STATUS_DURATION = 3.0
+STATUS_DURATION        = 3.0   # seconds a transient status message is visible
 
-# RC-8: Sensor freeze detection and hard-reset thresholds
-# After SENSOR_FROZEN_WARN_SEC with no new data, show the persistent "SENSOR ERR" banner.
-# After SENSOR_HARD_RESET_SEC with no new data, force an MCU reset regardless of
-# how many soft-recovery attempts have been made — this is the last resort.
-SENSOR_FROZEN_WARN_SEC = 30.0
-SENSOR_HARD_RESET_SEC = 90.0
-
-# RC-8: STA reconnect cooldown — prevents wifi.radio.connect() from being called
-# on every main-loop iteration when the network is unavailable.  A minimum of
-# STA_RECONNECT_COOLDOWN_S seconds must elapse between connection attempts.
-STA_RECONNECT_COOLDOWN_S = 60.0
-
-# RC-8: NTP retry throttle — when NTP sync fails, wait at least this many seconds
-# before the next attempt.  Without this guard the main loop calls ntp_sync() on
-# every iteration (because ntp_sync_pending stays True), each blocking up to 4.5 s.
-NTP_MIN_RETRY_S = 60.0
-
-LOW_THRESHOLD_DEFAULT = 800
-MED_THRESHOLD_DEFAULT = 1200
+# ── CO₂ alert thresholds ──────────────────────────────────────────────
+LOW_THRESHOLD_DEFAULT   = 800
+MED_THRESHOLD_DEFAULT   = 1200
 ALERT_THRESHOLD_DEFAULT = 1500
-
-LOW_THRESHOLD = LOW_THRESHOLD_DEFAULT
-MED_THRESHOLD = MED_THRESHOLD_DEFAULT
+LOW_THRESHOLD  = LOW_THRESHOLD_DEFAULT
+MED_THRESHOLD  = MED_THRESHOLD_DEFAULT
 ALERT_THRESHOLD = ALERT_THRESHOLD_DEFAULT
 
+# ── History buffer ────────────────────────────────────────────────────
 MAX_POINTS_DEFAULT = 1000
-MAX_POINTS = MAX_POINTS_DEFAULT
+MAX_POINTS     = MAX_POINTS_DEFAULT
+MAX_WEB_POINTS = 2000          # max points served via /data endpoint
 
-MAX_WEB_POINTS = 2000
-SETTINGS_FILE = "settings.json"
+# ── Network ───────────────────────────────────────────────────────────
+STA_RECONNECT_COOLDOWN_S = 60.0       # min seconds between connect() calls
+NTP_MIN_RETRY_S          = 60.0       # min seconds between NTP attempts
+NTP_SYNC_INTERVAL        = 6 * 60 * 60  # 6 h between successful NTP re-syncs
 
-SCREEN_MAIN = 0
+# ── Cloud ─────────────────────────────────────────────────────────────
+CLOUD_MAX_BACKOFF = 10 * 60    # seconds (exponential backoff cap)
+CLOUD_OK_TTL      = 300.0      # seconds to keep "CLOUD" indicator lit
+
+# ── UI / screens ──────────────────────────────────────────────────────
+SCREEN_MAIN   = 0
 SCREEN_APINFO = 1
-screen = SCREEN_MAIN
-
-# Wi-Fi mode state
 WIFI_MODE_AP  = "ap"
 WIFI_MODE_STA = "sta"
-wifi_mode = WIFI_MODE_AP
+D2_HOLD_SECONDS = 2.0          # long-press duration for WiFi mode toggle
 
-# D2 hold threshold for toggling AP/STA
-D2_HOLD_SECONDS = 2.0
+# ── Persistence ───────────────────────────────────────────────────────
+SETTINGS_FILE = "settings.json"
 d2_hold_start = None
 d2_hold_fired = False
 
@@ -382,17 +381,13 @@ cloud_interval_sec = 60
 
 last_cloud_send = 0.0
 cloud_failures = 0
-CLOUD_MAX_BACKOFF = 10 * 60
 # NTP time sync (STA only)
 ntp_synced = False
 last_ntp_sync = 0.0
-NTP_SYNC_INTERVAL = 6 * 60 * 60  # seconds
 ntp_sync_pending = True  # try soon after STA connect
-
 
 # Cloud indicator: show only after a successful post
 cloud_last_ok = 0.0
-CLOUD_OK_TTL = 300.0  # seconds to keep CLOUD indicator on after success
 
 # Cloud debug
 cloud_last_http = None      # last HTTP status code (int) or None
