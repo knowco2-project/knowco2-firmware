@@ -1,6 +1,6 @@
 # knowco2 firmware (AP portal + STA + mDNS)
-# Target: Adafruit Feather ESP32-S3 Reverse TFT (CircuitPython 10.0.3)
-# Version: RC-34
+# Target: Adafruit Feather ESP32-S3 Reverse TFT (CircuitPython 10.x)
+# Version: RC-41
 # ----------------------------------------------------------------------
 # FEATURE SUMMARY
 # - Splash screen with centered logo bitmap and automatic cleanup.
@@ -31,6 +31,10 @@
 # - Security headers on all responses: X-Content-Type-Options,
 #   X-Frame-Options, Referrer-Policy.
 # - Admin password protection for the settings page (POST-based auth).
+# - Admin password protection for /calibration write operations.
+# - CircuitPython runtime version detected at boot and shown on info screen
+#   and included in /status JSON alongside firmware version.
+# - /status JSON omits cloud_api_url (internal endpoint) for network privacy.
 # ----------------------------------------------------------------------
 
 FIRMWARE_VERSION = "RC-41"
@@ -43,6 +47,27 @@ import digitalio
 import json
 import os
 import binascii
+import sys as _sys
+
+# Detect CircuitPython runtime version (e.g. "10.0.3") for display and diagnostics.
+try:
+    _impl = getattr(_sys, "implementation", None)
+    if _impl is not None and hasattr(_impl, "version"):
+        _v = _impl.version
+        if isinstance(_v, tuple) and len(_v) >= 3:
+            cp_version_str = "%d.%d.%d" % (_v[0], _v[1], _v[2])
+        else:
+            cp_version_str = str(_v)
+    else:
+        _sv = getattr(_sys, "version", "") or ""
+        _idx = _sv.find("CircuitPython ")
+        if _idx >= 0:
+            _tail = _sv[_idx + len("CircuitPython "):]
+            cp_version_str = _tail.split()[0].rstrip(";")
+        else:
+            cp_version_str = _sv.split(";")[0].strip() or "unknown"
+except Exception:
+    cp_version_str = "unknown"
 
 # MQTT (optional — install adafruit_minimqtt on CIRCUITPY/lib/)
 try:
@@ -1875,7 +1900,7 @@ def refresh_apinfo_screen():
 
     ap_hw_label.text = "HW:  " + (hw_short or "N/A")
     ap_scd_label.text = sensor_model_str + ": " + (scd_short or "N/A")
-    ap_fw_label.text = "FW:  " + FIRMWARE_VERSION
+    ap_fw_label.text = "FW:" + FIRMWARE_VERSION + "  CP:" + cp_version_str
 
     # Keep QR codes in sync with the current mode / address.
     if screen == SCREEN_APINFO and adafruit_miniqr is not None:
@@ -3690,6 +3715,8 @@ def handle_status_route(conn):
         "board_id": board_id_str,
         "scd_serial": scd_serial_str,
         "pair_code": pair_code,
+        "firmware_version": FIRMWARE_VERSION,
+        "cp_version": cp_version_str,
 
         "battery_v": vbat,
         "battery_pct": pct,
@@ -3703,7 +3730,6 @@ def handle_status_route(conn):
 
         "cloud_enabled": cloud_enabled,
         "cloud_interval_sec": cloud_interval_sec,
-        "cloud_api_url": cloud_api_url,
         "cloud_configured": bool(cloud_api_url) and bool(cloud_device_token),
         "cloud_last_attempt_ts": cloud_last_attempt_ts,
         "cloud_last_http": cloud_last_http,
@@ -3759,7 +3785,7 @@ def handle_status_route(conn):
     send_all(conn, body)
 
 
-def render_calibration_page():
+def render_calibration_page(authed_pw=""):
     """
     Generate the HTML for the calibration page.  This page allows the user
     to configure altitude and ambient pressure compensation, toggle
@@ -3767,6 +3793,9 @@ def render_calibration_page():
     calibration against a reference CO₂ concentration.  It also
     displays the current calibration settings and the timestamp of the
     last calibration.
+
+    authed_pw: if non-empty, embeds a hidden 'pw' field in the form so the
+    password is preserved across GET submissions when auth is enabled.
     """
     asc_enabled = bool(settings.get("asc_enabled", True))
     asc_checked = "checked" if asc_enabled else ""
@@ -3795,6 +3824,13 @@ def render_calibration_page():
     # compute this once to avoid inline conditional logic in the HTML string,
     # which can lead to confusing operator precedence.
     calibration_text = (esc(last_ref) + " ppm") if last_ref else "None"
+    # If the caller supplied a validated password, embed it as a hidden field so
+    # the form preserves auth across multiple GET submissions.
+    if authed_pw:
+        _esc_pw = authed_pw.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        calibration_pw_field = "<input type=\"hidden\" name=\"pw\" value=\"" + _esc_pw + "\">\n"
+    else:
+        calibration_pw_field = ""
     # Build the HTML page.  Use similar styling to the settings page for
     # consistency.  This page uses GET to submit form data so that
     # parameters appear in the query string for simple parsing.
@@ -3821,7 +3857,7 @@ def render_calibration_page():
   <div class='wrap'>
     <h1>Calibration</h1>
     <form method='GET' action='/calibration'>
-      <fieldset style='border:1px solid #333; border-radius:8px; padding:10px;'>
+      """ + calibration_pw_field + """<fieldset style='border:1px solid #333; border-radius:8px; padding:10px;'>
         <legend style='font-size:12px; color:#aaa;'>Calibration Settings</legend>
         <label>Altitude (m)
           <input type='number' name='altitude' min='0' max='""" + str(ALTITUDE_MAX) + """' value='""" + esc(altitude) + """'>
@@ -3858,9 +3894,41 @@ def handle_calibration_route(conn, params):
     forced calibration.  After applying any changes, persists the new
     settings and reconfigures the sensor, then renders the calibration
     page.
+
+    Write operations (altitude, pressure, asc, calibrate, reset) are
+    protected by the admin password when one is configured.  The GET view
+    (no write params) is always accessible so users can check calibration
+    state without authentication.
     """
     global settings
     scd_available = (scd is not None)
+
+    # Protect write operations with admin password if one is configured.
+    _WRITE_PARAMS = {"reset", "calibrate", "altitude", "pressure", "asc", "update"}
+    _has_write_op = params and any(k in params for k in _WRITE_PARAMS)
+    _admin_pw = settings.get("admin_password", "")
+    if _has_write_op and _admin_pw:
+        _provided = params.get("pw", "")
+        if _provided != _admin_pw:
+            _esc_pw = _admin_pw.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            _login_html = """<!DOCTYPE html>
+<html><head><meta charset='utf-8'><title>Calibration - Login</title>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<style>body{font-family:sans-serif;background:#0b0b0b;color:#eee;margin:0}
+.wrap{max-width:480px;margin:0 auto;padding:16px;text-align:center}
+input{padding:6px;border-radius:4px;border:1px solid #444;background:#111;color:#eee;font-size:14px;width:80%;max-width:260px}
+button{margin-top:16px;padding:8px 16px;border-radius:4px;border:1px solid #00bcd4;background:#00bcd4;color:#000;font-weight:600;cursor:pointer}
+</style></head><body><div class='wrap'>
+<h1>Know CO&#8322; Calibration</h1><p>Enter settings password to apply changes:</p>
+<form method='GET' action='/calibration'>
+<label>Password<br><input type='password' name='pw'></label><br>
+<button type='submit'>Unlock</button></form>
+<p><a href='/' style='color:#00bcd4;'>Back to settings</a></p>
+</div></body></html>"""
+            _header, _body = make_html_response(_login_html)
+            send_all(conn, _header)
+            send_all(conn, _body)
+            return
     # If parameters were supplied, apply them.  We handle the "reset" action
     # first so that it overrides any other query parameters.  Resetting
     # restores defaults: ASC enabled, altitude/pressure disabled (0) and
@@ -3927,8 +3995,8 @@ def handle_calibration_route(conn, params):
             # Persist changes
             save_settings()
             show_status("Calibration settings updated")
-    # Render the calibration page
-    html = render_calibration_page()
+    # Render the calibration page (pass authenticated pw so the form can carry it forward)
+    html = render_calibration_page(authed_pw=params.get("pw", "") if params else "")
     header, body = make_html_response(html)
     send_all(conn, header)
     send_all(conn, body)
