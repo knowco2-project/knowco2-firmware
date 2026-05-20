@@ -1,6 +1,6 @@
 # knowco2 firmware (AP portal + STA + mDNS)
 # Target: Adafruit Feather ESP32-S3 Reverse TFT (CircuitPython 9.2.9)
-# Version: RC-9  (clean boot display)
+# Version: RC-18  (ZIP package OTA — update firmware, libs, boot, assets)
 # ----------------------------------------------------------------------
 # FEATURE SUMMARY
 # - Splash screen with centered logo bitmap and automatic cleanup.
@@ -18,7 +18,122 @@
 # - Memory monitor and status logging with throttling to avoid spam.
 # - Sensor CRC failure tracking, stale-sample watchdog, recovery logic,
 #   and MCU watchdog reset for hard stalls.
-# RC-9 CHANGES
+# RC-18 CHANGES
+# - ZIP package OTA: the /update page now accepts a .zip file in addition to
+#   a plain .py file.  The firmware auto-detects the type by magic bytes
+#   (PK\x03\x04 = ZIP, otherwise Python source).
+# - A ZIP package may contain any combination of:
+#     code.py        — main firmware
+#     boot.py        — boot script
+#     lib/**         — CircuitPython library files (.mpy or .py)
+#     assets/**      — splash bitmaps and other assets
+#   Only files at these allowed paths are extracted; anything else is skipped.
+# - ZIP extraction supports both STORED (no compression) and DEFLATE
+#   compression.  Compressed data is decompressed in RAM using zlib (raw
+#   DEFLATE, wbits=-15) and written to disk.
+# - code.py (if present) is extracted to a temp path and sanity-checked
+#   before the atomic rename, same as the single-file OTA path.
+# - Settings backup is written before the ZIP write begins (carried from RC-17).
+# - The /update UI now documents the expected package structure and shows a
+#   shell command users can copy to build the ZIP on macOS/Linux.
+# - Version badge updated to RC-18.
+# RC-17 CHANGES
+# - Settings persistence across OTA updates: settings.json is now backed up
+#   to settings.json.bak before every OTA write (both file upload and URL
+#   download paths).  On boot, load_settings() will automatically restore
+#   from settings.json.bak if settings.json is missing or corrupt, then
+#   re-write it as the primary file so the device is fully configured without
+#   any user intervention.
+# - save_settings() also writes settings.json.bak after every successful
+#   save, so the backup is always current (not just at OTA time).
+# - Version badge updated to RC-17 in the settings page header.
+# RC-16 CHANGES
+# - Comprehensive i18n: all form labels, help text, placeholders, and ARIA
+#   strings now have data-i18n / data-i18n-placeholder / data-i18n-aria-label
+#   attributes. Switching language instantly updates the full page including
+#   <html lang>, <title>, field labels, help text and placeholder hints.
+# - Accessibility: ARIA roles, aria-describedby linking labels to help text,
+#   aria-required on required fields, aria-label on icon-only controls,
+#   skip-to-content link, explicit <label for="id"> associations throughout,
+#   and role="main" on the main container.
+# - Readability: base font size 16 px, generous line-height, min 44 px tap
+#   targets on all interactive elements, high-visibility focus ring
+#   (3 px solid #00bcd4), improved spacing between field groups.
+# - prefers-reduced-motion: CSS animations/transitions are suppressed when
+#   the user has requested reduced motion.
+# RC-15 CHANGES
+# - Fixed OTA hard-reset / filesystem wipe: the hardware watchdog (20 s
+#   timeout) was firing during large file writes because handle_http_client
+#   blocks the main loop (which normally feeds the watchdog) for the entire
+#   duration of the upload.  A mid-write MCU reset left a partial file on
+#   disk; CircuitPython detected the inconsistency on the next boot and
+#   reformatted the filesystem, wiping /lib and all user files.
+#   Fix: watchdog timeout is raised to 90 s at the start of any OTA write
+#   operation, and _wd.feed() is called on every 512-byte chunk so the
+#   watchdog can never expire during a file transfer regardless of size.
+# RC-14 CHANGES (carried forward)
+# - Added Korean (한국어) as a 9th language option in the web UI.
+# RC-13 CHANGES (carried forward)
+# - Fixed critical OTA file upload bug: _read_request_head reads in 512-byte
+#   chunks and stops when it finds the \r\n\r\n header separator, but the
+#   chunk containing the separator often includes the first ~50-100 bytes of
+#   the file body.  Those bytes were silently discarded, causing the written
+#   file to be truncated from the beginning and unparseable by CircuitPython.
+#   Fix: _stream_request_body_to_file now splits headers_raw at \r\n\r\n,
+#   writes the already-consumed body prefix first, then reads the remainder
+#   from the socket.
+# - Added firmware sanity check before install: before renaming code.py.ota
+#   to code.py, the first 64 bytes are read and verified to start with a
+#   valid Python token (#, import, from).  A corrupted or wrong file is
+#   deleted and the existing firmware is left untouched.  This prevents
+#   repeated CircuitPython crash-boot cycles that can trigger an automatic
+#   filesystem reformat on the ESP32-S3.
+# RC-12 CHANGES (carried forward)
+# - Fixed language switcher: applyLang() no longer uses textContent on
+#   elements that have child elements (inputs, selects).  It now updates
+#   only the first text node, leaving child form elements intact.  This
+#   was silently destroying the language <select> on every page load,
+#   making it impossible to switch language at all.
+# - Moved data-i18n off <label> onto an inner <span> so the pattern is
+#   correct for all label elements that contain form controls.
+# - Settings page now shows firmware version for easy OTA confirmation.
+# RC-11 CHANGES (carried forward)
+# - OTA firmware update now supports file upload (drag-and-drop or file
+#   picker) in addition to the URL-based download.  File is streamed
+#   directly to disk in 512-byte chunks so large firmware files never
+#   overflow RAM.  URL download is also fixed to stream via
+#   iter_content() rather than loading the full response into RAM.
+# - Web UI internationalization: 8 language options (English, Spanish,
+#   French, German, Portuguese, Italian, Japanese, Chinese Simplified).
+#   Language is selected via a dropdown on the settings page, stored in
+#   the browser's localStorage, and applied client-side via JavaScript.
+#   No device reboot needed.  Device display remains English-only due to
+#   the built-in font supporting ASCII characters only.
+# - Security headers added to all HTTP responses:
+#   X-Content-Type-Options, X-Frame-Options, Referrer-Policy.
+#   Note: HTTPS for the local web server is not currently feasible in
+#   CircuitPython — the ssl module only supports client-side TLS.
+#   HTTP on the local LAN is acceptable; for secure remote access use a
+#   VPN (Tailscale, WireGuard, etc.).
+# RC-10 CHANGES (carried forward)
+# - Settings and login forms now POST rather than GET, so passwords and
+#   credentials are no longer visible in browser history or server logs.
+#   GET parameter auth is still accepted for backward compat (API use).
+# - CSV export: GET /export.csv returns all in-RAM history as a
+#   downloadable CSV (seconds_ago, co2_ppm, temp_c, rh_pct).
+# - MQTT publishing: configurable broker (host, port, user, pass, topic
+#   prefix, interval).  Publishes CO₂/temp/RH on each interval (STA only).
+#   Works with Home Assistant Mosquitto or any standard MQTT broker.
+# - Adafruit IO publishing: separate AIO credentials (username + key),
+#   configurable group key and interval.  Publishes to AIO feeds alongside
+#   MQTT and cloud (all three can run simultaneously).
+# - OTA firmware update: GET /update shows a form; POST /update accepts a
+#   firmware_url parameter, fetches the file, writes to /code.py, and
+#   soft-resets.  Requires admin password if set.  STA mode only.
+# - Display dimming schedule: optional dim_enabled setting with
+#   dim_start_hour, dim_end_hour (0-23) and dim_brightness (0-100%).
+#   Requires NTP sync.  Checked every 60 s in the main loop.
+# RC-9 CHANGES (carried forward)
 # - boot.py: suppress CircuitPython REPL terminal text on the built-in TFT
 #   as early as possible by setting display.root_group = displayio.Group()
 #   and display.rotation = 180.  Users no longer see Adafruit boot text
@@ -53,6 +168,16 @@ import digitalio
 import json
 import os
 import binascii
+
+# MQTT (optional — install adafruit_minimqtt on CIRCUITPY/lib/)
+try:
+    import adafruit_minimqtt.adafruit_minimqtt as MQTT
+    _HAS_MQTT = True
+except Exception:
+    MQTT = None
+    _HAS_MQTT = False
+    print("adafruit_minimqtt not available; MQTT/AIO disabled")
+
 BOOT_TIME_MONO = time.monotonic()
 
 # Make sure no socket operation can block forever (helps prevent internal watchdog expiry).
@@ -766,10 +891,40 @@ settings = {
     "cloud_device_token": "",
     "cloud_interval_sec": 60,
 
+    # ---- MQTT broker (e.g. Home Assistant) ----
+    # mqtt_enabled: publish CO2/temp/RH to a standard MQTT broker.
+    "mqtt_enabled": False,
+    "mqtt_broker": "",           # hostname or IP
+    "mqtt_port": 1883,
+    "mqtt_user": "",
+    "mqtt_pass": "",
+    "mqtt_topic_prefix": "knowco2",  # topics: <prefix>/co2, /temp_c, /rh
+    "mqtt_interval_sec": 60,
+
+    # ---- Adafruit IO ----
+    "aio_enabled": False,
+    "aio_username": "",
+    "aio_key": "",
+    "aio_group_key": "knowco2",  # feed names: <group>.co2, .temperature, .humidity
+    "aio_interval_sec": 60,
+
+    # ---- Display dimming schedule ----
+    # dim_enabled: automatically dim the display between dim_start_hour and dim_end_hour.
+    # Requires NTP sync.  dim_brightness is 0-100 (percent of full brightness).
+    "dim_enabled": False,
+    "dim_start_hour": 22,   # 10 PM
+    "dim_end_hour": 7,      # 7 AM
+    "dim_brightness": 10,   # 10% during dim hours
+
     # Optional admin password to protect the settings page.  If this string is
     # non-empty, the root settings page will require a matching "pw" query
     # parameter.  Use the web UI below to set or clear this password.
     "admin_password": "",
+
+    # UI language for the web settings page.  Applied client-side via JavaScript.
+    # Options: en, es, fr, de, pt, it, ja, zh
+    # Device display is always English (font supports ASCII only).
+    "lang": "en",
 
     # Calibration settings (CO₂ sensor)
     # When asc_enabled is True, the SCD4x will use its built‑in Automatic Self Calibration
@@ -805,15 +960,40 @@ def apply_settings():
 
 def load_settings():
     global settings, temp_mode, display_mode
+    loaded = False
     try:
         with open(SETTINGS_FILE, "r") as f:
             data = json.load(f)
         if isinstance(data, dict):
             settings.update(data)
+            loaded = True
     except OSError:
         pass
     except ValueError:
         pass
+
+    if not loaded:
+        # Primary settings.json is missing or corrupt.  Try the backup that is
+        # written alongside every successful save and before every OTA update.
+        _bak = SETTINGS_FILE + ".bak"
+        try:
+            with open(_bak, "r") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                settings.update(data)
+                loaded = True
+                # Restore the primary file from the backup immediately so
+                # subsequent saves/reads work against the normal path.
+                try:
+                    _ensure_fs_writable()
+                    with open(SETTINGS_FILE, "w") as f:
+                        json.dump(settings, f)
+                except Exception:
+                    pass
+        except OSError:
+            pass
+        except ValueError:
+            pass
 
     apply_settings()
 
@@ -841,6 +1021,12 @@ def save_settings():
             os.replace(tmp, SETTINGS_FILE)
         except AttributeError:
             os.rename(tmp, SETTINGS_FILE)
+        # Keep the backup in sync so it's always a recent copy of good settings.
+        try:
+            with open(SETTINGS_FILE + ".bak", "w") as _bk:
+                json.dump(settings, _bk)
+        except Exception:
+            pass
         return True
     except OSError as e:
         try:
@@ -858,6 +1044,11 @@ def save_settings():
                     os.replace(tmp, SETTINGS_FILE)
                 except AttributeError:
                     os.rename(tmp, SETTINGS_FILE)
+                try:
+                    with open(SETTINGS_FILE + ".bak", "w") as _bk:
+                        json.dump(settings, _bk)
+                except Exception:
+                    pass
                 return True
             except Exception:
                 pass
@@ -936,6 +1127,9 @@ def update_settings_from_params(params):
         # spaces are significant.
         settings["admin_password"] = params["admin_pw"] or ""
 
+    if "lang" in params and params["lang"] in ("en", "es", "fr", "de", "pt", "it", "ja", "zh", "ko"):
+        settings["lang"] = params["lang"]
+
     if "ap_ssid" in params and params["ap_ssid"]:
         new_ssid = params["ap_ssid"]
         if new_ssid != old_ap_ssid:
@@ -979,6 +1173,47 @@ def update_settings_from_params(params):
         settings["cloud_device_token"] = params["cloud_token"]
     if "cloud_interval_sec" in params:
         try: settings["cloud_interval_sec"] = int(params["cloud_interval_sec"])
+        except Exception: pass
+
+    # MQTT broker settings
+    settings["mqtt_enabled"] = "mqtt_enabled" in params
+    if "mqtt_broker" in params:
+        settings["mqtt_broker"] = params["mqtt_broker"].strip()
+    if "mqtt_port" in params:
+        try: settings["mqtt_port"] = int(params["mqtt_port"])
+        except Exception: pass
+    if "mqtt_user" in params:
+        settings["mqtt_user"] = params["mqtt_user"]
+    if "mqtt_pass" in params and params["mqtt_pass"]:
+        settings["mqtt_pass"] = params["mqtt_pass"]
+    if "mqtt_topic_prefix" in params and params["mqtt_topic_prefix"]:
+        settings["mqtt_topic_prefix"] = params["mqtt_topic_prefix"].strip()
+    if "mqtt_interval_sec" in params:
+        try: settings["mqtt_interval_sec"] = max(15, int(params["mqtt_interval_sec"]))
+        except Exception: pass
+
+    # Adafruit IO settings
+    settings["aio_enabled"] = "aio_enabled" in params
+    if "aio_username" in params:
+        settings["aio_username"] = params["aio_username"].strip()
+    if "aio_key" in params and params["aio_key"]:
+        settings["aio_key"] = params["aio_key"]
+    if "aio_group_key" in params and params["aio_group_key"]:
+        settings["aio_group_key"] = params["aio_group_key"].strip()
+    if "aio_interval_sec" in params:
+        try: settings["aio_interval_sec"] = max(15, int(params["aio_interval_sec"]))
+        except Exception: pass
+
+    # Display dimming schedule
+    settings["dim_enabled"] = "dim_enabled" in params
+    if "dim_start_hour" in params:
+        try: settings["dim_start_hour"] = max(0, min(23, int(params["dim_start_hour"])))
+        except Exception: pass
+    if "dim_end_hour" in params:
+        try: settings["dim_end_hour"] = max(0, min(23, int(params["dim_end_hour"])))
+        except Exception: pass
+    if "dim_brightness" in params:
+        try: settings["dim_brightness"] = max(0, min(100, int(params["dim_brightness"])))
         except Exception: pass
 
     # Validate and reorder threshold values to ensure they are sensible.  Clamp all
@@ -1930,7 +2165,10 @@ def build_response(status_code, content_type, body_bytes=b""):
         "Cache-Control: no-store\r\n" +
         "Pragma: no-cache\r\n" +
         "Connection: close\r\n" +
-        "Access-Control-Allow-Origin: *\r\n"
+        "Access-Control-Allow-Origin: *\r\n" +
+        "X-Content-Type-Options: nosniff\r\n" +
+        "X-Frame-Options: SAMEORIGIN\r\n" +
+        "Referrer-Policy: no-referrer\r\n"
     )
     if status_code != 204:
         headers += "Content-Length: %d\r\n" % len(body_bytes)
@@ -2008,6 +2246,112 @@ def _read_request_head(conn, max_bytes=2048, max_wait=0.6):
             time.sleep(0.01)
     return data
 
+def _read_request_body(conn, headers_raw, max_bytes=8192, max_wait=3.0):
+    """Read the POST body from conn.  headers_raw is the raw bytes of the request
+    head (already read).  Returns body as bytes or b'' on error."""
+    try:
+        content_length = 0
+        for line in headers_raw.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                try:
+                    content_length = int(line.split(b":", 1)[1].strip())
+                except Exception:
+                    pass
+                break
+        if content_length <= 0:
+            return b""
+        content_length = min(content_length, max_bytes)
+        body = b""
+        start = time.monotonic()
+        while len(body) < content_length and (time.monotonic() - start) < max_wait:
+            try:
+                chunk = sock_recv(conn, min(512, content_length - len(body)))
+                if not chunk:
+                    break
+                body += chunk
+            except OSError:
+                time.sleep(0.01)
+        return body
+    except Exception:
+        return b""
+
+def _stream_request_body_to_file(conn, headers_raw, dest_path, max_bytes=400000, max_wait=300.0):
+    """Stream a POST body directly to a file in 512-byte chunks without buffering in RAM.
+    Returns (success: bool, message: str).
+
+    IMPORTANT: _read_request_head reads in 512-byte chunks and stops after finding
+    \\r\\n\\r\\n, but the chunk containing the separator may include bytes PAST the
+    separator that are the beginning of the request body.  We split headers_raw at
+    the first \\r\\n\\r\\n, treat everything before it as headers and everything after
+    as already-received body bytes that must be written first.
+    """
+    try:
+        # Split headers from any body bytes that were already consumed by _read_request_head.
+        sep = headers_raw.find(b"\r\n\r\n")
+        if sep >= 0:
+            headers_only = headers_raw[:sep]
+            body_prefix = headers_raw[sep + 4:]   # bytes after the blank line
+        else:
+            headers_only = headers_raw
+            body_prefix = b""
+
+        content_length = 0
+        for line in headers_only.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                try:
+                    content_length = int(line.split(b":", 1)[1].strip())
+                except Exception:
+                    pass
+                break
+        if content_length <= 0:
+            return False, "Missing Content-Length header"
+        if content_length > max_bytes:
+            return False, "File too large (%d bytes, max %d)" % (content_length, max_bytes)
+
+        # Extend the hardware watchdog timeout for the duration of the file write.
+        # The normal 20 s timeout fires during large uploads because the main loop
+        # (which feeds the watchdog) is blocked.  A mid-write reset leaves a partial
+        # file and causes CircuitPython to reformat the filesystem on the next boot.
+        try:
+            if _wd is not None:
+                _wd.timeout = 90
+        except Exception:
+            pass
+
+        written = 0
+        start = time.monotonic()
+        with open(dest_path, "wb") as f:
+            # Write any bytes already read past the header separator first.
+            if body_prefix:
+                f.write(body_prefix)
+                written += len(body_prefix)
+            # Stream the remainder from the socket.
+            while written < content_length:
+                if (time.monotonic() - start) > max_wait:
+                    return False, "Upload timed out after %d bytes" % written
+                remaining = content_length - written
+                try:
+                    chunk = sock_recv(conn, min(512, remaining))
+                    if not chunk:
+                        time.sleep(0.01)
+                        continue
+                    f.write(chunk)
+                    # Feed the watchdog on every chunk so a long write never
+                    # triggers a hardware reset mid-file.
+                    try:
+                        if _wd is not None:
+                            _wd.feed()
+                    except Exception:
+                        pass
+                    written += len(chunk)
+                except OSError:
+                    time.sleep(0.01)
+        if written < content_length:
+            return False, "Incomplete upload: %d of %d bytes received" % (written, content_length)
+        return True, "OK"
+    except Exception as e:
+        return False, "Stream error: " + str(e)
+
 _CAPTIVE_PATHS_204 = {
     "/generate_204", "/gen_204", "/ncsi.txt", "/connecttest.txt", "/success.txt", "/hotspot-detect.html",
     "/canonical.html", "/mobile/status.php", "/library/test/success.html", "/fwlink", "/fwlink/", "/redirect",
@@ -2039,6 +2383,35 @@ def render_settings_page():
     # If no cloud API URL is stored yet, prefill with the default knowco2 API endpoint.
     if not cloud_api:
         cloud_api = "https://api.knowco2.com"
+
+    def esc_attr(val):
+        try:
+            return str(val).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        except Exception:
+            return ""
+
+    # MQTT section
+    mqtt_enabled = settings.get("mqtt_enabled", False)
+    mqtt_broker = esc_attr(str(settings.get("mqtt_broker", "") or ""))
+    mqtt_port = esc_attr(str(settings.get("mqtt_port", 1883) or 1883))
+    mqtt_user = esc_attr(str(settings.get("mqtt_user", "") or ""))
+    mqtt_topic_prefix = esc_attr(str(settings.get("mqtt_topic_prefix", "knowco2") or "knowco2"))
+    mqtt_interval = esc_attr(str(settings.get("mqtt_interval_sec", 60) or 60))
+    mqtt_checked = "checked" if mqtt_enabled else ""
+
+    aio_enabled = settings.get("aio_enabled", False)
+    aio_username = esc_attr(str(settings.get("aio_username", "") or ""))
+    aio_group = esc_attr(str(settings.get("aio_group_key", "knowco2") or "knowco2"))
+    aio_interval = esc_attr(str(settings.get("aio_interval_sec", 60) or 60))
+    aio_checked = "checked" if aio_enabled else ""
+
+    dim_enabled = settings.get("dim_enabled", False)
+    dim_start = esc_attr(str(settings.get("dim_start_hour", 22) or 22))
+    dim_end = esc_attr(str(settings.get("dim_end_hour", 7) or 7))
+    dim_brightness = esc_attr(str(settings.get("dim_brightness", 10) or 10))
+    dim_checked = "checked" if dim_enabled else ""
+
+    current_lang = settings.get("lang", "en")
 
     tm = temp_mode
     dm = display_mode
@@ -2075,45 +2448,74 @@ def render_settings_page():
         pw_hidden_field = ""
 
     html = """<!DOCTYPE html>
-<html>
+<html lang=\"""" + current_lang + """\">
 <head>
   <meta charset="utf-8">
   <title>Know CO2 Settings</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#0b0b0b; color:#eee; margin:0; }
-    .wrap { max-width:480px; margin:0 auto; padding:16px; }
-    h1 { font-size:20px; margin:0 0 10px 0; }
-    h2 { font-size:16px; margin:16px 0 8px 0; border-bottom:1px solid #333; padding-bottom:4px; }
-    fieldset { border:1px solid #333; border-radius:8px; padding:10px; margin-top:8px; }
-    legend { padding:0 4px; font-size:12px; color:#aaa; }
-    label { display:block; margin-top:8px; font-size:13px; }
-    input, select { width:100%; max-width:260px; padding:4px 6px; border-radius:4px; border:1px solid #444; background:#111; color:#eee; font-size:13px; }
-    input[type=checkbox] { width:auto; max-width:none; }
-    .row { margin-top:10px; }
-    button { padding:6px 12px; border-radius:4px; border:1px solid #00bcd4; background:#00bcd4; color:#000; font-weight:600; cursor:pointer; }
-    button:hover { background:#26c6da; border-color:#26c6da; }
-    small { color:#aaa; font-size:11px; }
-    .muted { color:#aaa; }
-    #chart-container { margin-top:12px; border:1px solid #333; border-radius:8px; padding:8px; }
-    #chart { width:100%; max-width:420px; height:140px; background:#050505; border-radius:4px; }
-    #chart-debug { font-size:10px; color:#888; margin-top:4px; }
-    #status-card { border:1px solid #333; border-radius:8px; padding:10px; margin:10px 0; background:#111; }
-    #status-main { font-size:18px; margin-bottom:6px; }
-    #status-extra { font-size:12px; color:#ccc; }
-    .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; border:1px solid #444; margin-right:4px; }
-    .badge-low { border-color:#00c853; color:#00e676; }
-    .badge-med { border-color:#ffeb3b; color:#fff176; }
-    .badge-high { border-color:#ff5252; color:#ff8a80; }
-    .code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    *,*::before,*::after{box-sizing:border-box}
+    :root{--accent:#00bcd4;--accent-dark:#0097a7;--bg:#0b0b0b;--surface:#111;--border:#333;--text:#eee;--muted:#888;--danger:#e53935;--warn:#ffb300;--green:#4caf50;--radius:6px;--focus-ring:3px solid #00bcd4}
+    html{font-size:16px;line-height:1.5}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:0}
+    .skip-link{position:absolute;top:-40px;left:0;background:var(--accent);color:#000;padding:8px 16px;text-decoration:none;border-radius:0 0 var(--radius) 0;font-weight:600;z-index:999}
+    .skip-link:focus{top:0}
+    .wrap{max-width:640px;margin:0 auto;padding:16px}
+    h1{color:var(--accent);margin:8px 0 4px;font-size:1.5rem}
+    h2{font-size:1rem;color:var(--muted);margin:0 0 12px;font-weight:400}
+    fieldset{border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;margin:12px 0}
+    legend{color:var(--accent);font-weight:600;font-size:0.9rem;padding:0 6px;text-transform:uppercase;letter-spacing:0.04em}
+    label{display:block;margin-top:12px;font-size:0.95rem;color:var(--text)}
+    label:first-child{margin-top:0}
+    label span.lbl{display:block;margin-bottom:4px;font-weight:500}
+    input[type=text],input[type=password],input[type=number],input[type=url],input[type=email],select,textarea{width:100%;padding:10px 12px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:1rem;font-family:inherit;transition:border-color .15s,box-shadow .15s;min-height:44px}
+    input[type=text]:focus,input[type=password]:focus,input[type=number]:focus,input[type=url]:focus,input[type=email]:focus,select:focus,textarea:focus{outline:var(--focus-ring);outline-offset:2px;border-color:var(--accent)}
+    input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent);cursor:pointer;flex-shrink:0;margin-right:8px}
+    .check-label{display:flex;align-items:flex-start;gap:8px;cursor:pointer;padding:4px 0;min-height:44px;align-items:center}
+    .check-label input[type=checkbox]{margin-top:0}
+    .help-text{font-size:0.8rem;color:var(--muted);margin-top:4px;line-height:1.4}
+    button[type=submit],.btn{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:10px 24px;border-radius:var(--radius);border:none;font-size:1rem;font-weight:600;cursor:pointer;transition:background .15s,transform .1s;letter-spacing:0.01em}
+    button[type=submit]:focus,.btn:focus{outline:var(--focus-ring);outline-offset:2px}
+    button[type=submit]:active,.btn:active{transform:scale(0.98)}
+    .btn-primary{background:var(--accent);color:#000}
+    .btn-primary:hover{background:var(--accent-dark)}
+    .btn-danger{background:var(--danger);color:#fff}
+    .btn-danger:hover{background:#c62828}
+    .btn-block{width:100%;margin-top:16px}
+    .code{font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:0.85rem;background:#1a1a1a;padding:2px 6px;border-radius:3px}
+    .muted{color:var(--muted)}
+    .warn-text{color:var(--warn)}
+    .api-note{font-size:0.8rem;color:var(--muted);margin-top:8px;padding:8px;background:#1a1a1a;border-radius:var(--radius);border-left:3px solid var(--border)}
+    a{color:var(--accent);text-decoration:none}
+    a:hover{text-decoration:underline}
+    a:focus{outline:var(--focus-ring);outline-offset:2px;border-radius:2px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .row label{flex:1;min-width:140px}
+    nav.page-nav{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
+    nav.page-nav a{font-size:0.9rem;padding:6px 12px;border-radius:var(--radius);border:1px solid var(--border);color:var(--muted)}
+    nav.page-nav a:hover{color:var(--text);border-color:var(--muted)}
+    .version-badge{font-size:0.75rem;font-weight:400;color:#555;vertical-align:middle;margin-left:4px}
+    #chart-container{margin-top:12px;border:1px solid var(--border);border-radius:var(--radius);padding:8px}
+    #chart{width:100%;max-width:420px;height:140px;background:#050505;border-radius:4px}
+    #chart-debug{font-size:10px;color:#888;margin-top:4px}
+    #status-card{border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin:10px 0;background:var(--surface)}
+    #status-main{font-size:18px;margin-bottom:6px}
+    #status-extra{font-size:12px;color:#ccc}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;border:1px solid #444;margin-right:4px}
+    .badge-low{border-color:#00c853;color:#00e676}
+    .badge-med{border-color:#ffeb3b;color:#fff176}
+    .badge-high{border-color:#ff5252;color:#ff8a80}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}}
+    @media(max-width:480px){.wrap{padding:12px}.row{flex-direction:column}}
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>Know CO2</h1>
+  <a href="#main-content" class="skip-link" data-i18n="skip_nav">Skip to main content</a>
+  <div class="wrap" id="main-content" role="main">
+    <h1>Know CO2 <span class="version-badge">RC-18</span></h1>
     <div class="muted" style="font-size:12px;margin-bottom:10px;">
       Open <span class="code">http://""" + ip_for_hint + """/"</span>.""" + mdns_hint + """
-      <br><small class="muted">If your phone says “No Internet”, that’s expected during AP setup.</small>
+      <br><small class="muted">If your phone says "No Internet", that’s expected during AP setup.</small>
     </div>
 
     <div id="status-card">
@@ -2139,24 +2541,34 @@ def render_settings_page():
       <div id="chart-debug"></div>
     </div>
 
-    <form method="GET" action="/">""" + pw_hidden_field + """
+    <form method="POST" action="/">""" + pw_hidden_field + """
       <h2>CO2 &amp; Graph</h2>
       <fieldset>
         <legend>Thresholds</legend>
-        <label>Low threshold (ppm)
-          <input type="number" name="low" min="400" max="5000"
+        <label for="field-low">
+          <span class="lbl" data-i18n="lbl_low">Low threshold (ppm)</span>
+          <input id="field-low" type="number" name="low" min="400" max="5000"
+                 aria-describedby="help-low"
                  value='""" + str(int(settings.get("low_threshold", LOW_THRESHOLD_DEFAULT))) + """'>
+          <span class="help-text" id="help-low" data-i18n="help_low">CO&#x2082; level below this is shown in green.</span>
         </label>
-        <label>Medium threshold (ppm)
-          <input type="number" name="med" min="400" max="5000"
+        <label for="field-med">
+          <span class="lbl" data-i18n="lbl_med">Medium threshold (ppm)</span>
+          <input id="field-med" type="number" name="med" min="400" max="5000"
+                 aria-describedby="help-med"
                  value='""" + str(int(settings.get("med_threshold", MED_THRESHOLD_DEFAULT))) + """'>
+          <span class="help-text" id="help-med" data-i18n="help_med">CO&#x2082; level below this is shown in yellow.</span>
         </label>
-        <label>Alert threshold (ppm)
-          <input type="number" name="alert" min="400" max="5000"
+        <label for="field-alert">
+          <span class="lbl" data-i18n="lbl_alert">Alert threshold (ppm)</span>
+          <input id="field-alert" type="number" name="alert" min="400" max="5000"
+                 aria-describedby="help-alert"
                  value='""" + str(int(settings.get("alert_threshold", ALERT_THRESHOLD_DEFAULT))) + """'>
+          <span class="help-text" id="help-alert" data-i18n="help_alert">CO&#x2082; level at or above this triggers an alert.</span>
         </label>
-        <label>Max history points in RAM
-          <input type="number" name="max_points" min="100" max="50000"
+        <label for="field-max-pts">
+          <span class="lbl" data-i18n="lbl_max_pts">History buffer (samples)</span>
+          <input id="field-max-pts" type="number" name="max_points" min="100" max="50000"
                  value='""" + str(int(max_points)) + """'>
         </label>
         <small>Higher values show longer history but use more memory.</small>
@@ -2165,11 +2577,31 @@ def render_settings_page():
       <h2>Password protection</h2>
       <fieldset>
         <legend>Password</legend>
-        <label>Settings password
-          <input type="password" name="admin_pw" maxlength="64" value="">
+        <label for="field-admin-pw">
+          <span class="lbl" data-i18n="lbl_admin_pw">Settings password</span>
+          <input id="field-admin-pw" type="password" name="admin_pw" maxlength="64" value=""
+                 aria-describedby="help-admin-pw">
+          <span class="help-text" id="help-admin-pw" data-i18n="help_admin_pw">Leave blank to disable password protection.</span>
         </label>
         <small class="muted">Leave blank to disable password protection. When a password is set,
           the settings page will prompt you to log in with that password before changes can be made.</small>
+      </fieldset>
+
+      <fieldset>
+        <legend data-i18n='sec_device'>Device</legend>
+        <label><span data-i18n='lbl_lang'>Interface Language / Idioma / Sprache</span><br>
+          <select name='lang'>
+            <option value='en'""" + (" selected" if current_lang=="en" else "") + """>English</option>
+            <option value='es'""" + (" selected" if current_lang=="es" else "") + """>Espa&#241;ol</option>
+            <option value='fr'""" + (" selected" if current_lang=="fr" else "") + """>Fran&#231;ais</option>
+            <option value='de'""" + (" selected" if current_lang=="de" else "") + """>Deutsch</option>
+            <option value='pt'""" + (" selected" if current_lang=="pt" else "") + """>Portugu&#234;s</option>
+            <option value='it'""" + (" selected" if current_lang=="it" else "") + """>Italiano</option>
+            <option value='ja'""" + (" selected" if current_lang=="ja" else "") + """>\u65e5\u672c\u8a9e</option>
+            <option value='zh'""" + (" selected" if current_lang=="zh" else "") + """>\u4e2d\u6587(\u7b80\u4f53)</option>
+            <option value='ko'""" + (" selected" if current_lang=="ko" else "") + """>\ud55c\uad6d\uc5b4</option>
+          </select>
+        </label>
       </fieldset>
 
       <fieldset class="row">
@@ -2183,16 +2615,17 @@ def render_settings_page():
         </label>
       </fieldset>
 
-      <fieldset class="row">
+      <fieldset>
         <legend>Alerts</legend>
-        <label>
-          <input type="checkbox" name="alerts" value="on" """ + checked_alerts + """>
-          Enable color alerts and on-screen alert messages
+        <label class="check-label">
+          <input type="checkbox" name="alerts" value="on" """ + checked_alerts + """
+                 data-i18n-aria="aria_alerts_check">
+          <span data-i18n="lbl_alerts">Enable color alerts and on-screen alert messages</span>
         </label>
       </fieldset>
 
       <fieldset class="row">
-        <legend>Display &amp; Units</legend>
+        <legend data-i18n='sec_display'>Display &amp; Units</legend>
         <label>Temperature units
           <select name="temp_mode">
             <option value="F" """ + sel_temp("F") + """>Fahrenheit</option>
@@ -2210,7 +2643,7 @@ def render_settings_page():
 
       <h2>Wi-Fi Access Point</h2>
       <fieldset>
-        <legend>Local AP</legend>
+        <legend data-i18n='sec_wifi'>Local AP</legend>
         <label>AP SSID
           <input type="text" name="ap_ssid" maxlength="32"
                  value='""" + ap_ssid + """'>
@@ -2220,8 +2653,9 @@ def render_settings_page():
         </label>
 
         <div class="row" style="margin-top:10px;">
-          <button type="button" onclick="location.href='/?regen_ap=1'">
-            Regenerate AP SSID + Password
+          <button type="button" class="btn btn-primary" onclick="location.href='/?regen_ap=1'"
+                  data-i18n="lbl_regen">
+            Regenerate AP credentials
           </button>
           <div class="muted" style="margin-top:6px;">
             <small>This restarts AP. View the new password on the device (press D2).</small>
@@ -2231,13 +2665,18 @@ def render_settings_page():
 
       <h2>Wi-Fi Network (client)</h2>
       <fieldset>
-        <legend>For LAN + cloud uploads</legend>
-        <label>Network SSID
-          <input type="text" name="sta_ssid" maxlength="32"
+        <legend data-i18n="sec_wifi">For LAN + cloud uploads</legend>
+        <p class="help-text" data-i18n="help_sta">Enter your home Wi-Fi credentials to connect the device to your network.</p>
+        <label for="field-sta-ssid">
+          <span class="lbl" data-i18n="lbl_sta_ssid">Network SSID</span>
+          <input id="field-sta-ssid" type="text" name="sta_ssid" maxlength="32"
+                 data-i18n-placeholder="ph_sta_ssid" placeholder="Your Wi-Fi network name"
                  value='""" + sta_ssid + """'>
         </label>
-        <label>Network password
-          <input type="password" name="sta_password" maxlength="63" value="">
+        <label for="field-sta-pass">
+          <span class="lbl" data-i18n="lbl_sta_pass">Network password</span>
+          <input id="field-sta-pass" type="password" name="sta_password" maxlength="63" value=""
+                 data-i18n-placeholder="ph_sta_pass" placeholder="Your Wi-Fi password">
         </label>
         <small class="muted">
           Tip: after saving STA credentials, <b>hold D2 for ~2 seconds</b> to switch into STA mode.
@@ -2246,32 +2685,42 @@ def render_settings_page():
 
       <h2>Cloud telemetry</h2>
       <fieldset>
-        <legend>API data ingest</legend>
+        <legend data-i18n='sec_cloud'>API data ingest</legend>
+        <p class="help-text" data-i18n="help_cloud">Send CO&#x2082; readings to the Know CO&#x2082; cloud dashboard.</p>
         <small class="muted">Onboard your device at <a href=\"https://cloud.knowco2.com\">https://cloud.knowco2.com</a> register and generate a device id and secret to enter.</small>
-        <label>
-          <input type="checkbox" name="cloud_enabled" value="on" """ + cloud_enabled_checked + """>
-          Enable cloud uploads (requires STA Wi-Fi + token)
+        <label class="check-label">
+          <input type="checkbox" name="cloud_enabled" value="on" """ + cloud_enabled_checked + """
+                 data-i18n-aria="aria_cloud_check">
+          <span data-i18n="lbl_cloud_en">Enable cloud uploads (requires STA Wi-Fi + token)</span>
         </label>
 
-        <label>Cloud API URL
-          <input type="text" name="cloud_api_url" maxlength="200"
-                 placeholder="https://api.knowco2.com"
+        <label for="field-cloud-url">
+          <span class="lbl" data-i18n="lbl_cloud_url">Cloud API URL</span>
+          <input id="field-cloud-url" type="text" name="cloud_api_url" maxlength="200"
+                 data-i18n-placeholder="ph_cloud_url" placeholder="https://api.knowco2.com/v1/ingest"
                  value='""" + cloud_api + """'>
         </label>
 
-        <label>Device token (secret)
-          <input type="password" name="cloud_device_token" maxlength="128" value="">
+        <label for="field-cloud-token">
+          <span class="lbl" data-i18n="lbl_cloud_token">Device token (secret)</span>
+          <input id="field-cloud-token" type="password" name="cloud_device_token" maxlength="128"
+                 data-i18n-placeholder="ph_cloud_token" placeholder="Paste your device token here" value="">
+          <span class="help-text" data-i18n="lbl_cloud_secret">Device secret / token</span>
         </label>
         <small>Paste token once. It is stored on device and not shown again.</small>
 
-        <label>Device ID
-          <input type="text" name="device_id" maxlength="40"
+        <label for="field-device-id">
+          <span class="lbl" data-i18n="lbl_device_id">Device ID</span>
+          <input id="field-device-id" type="text" name="device_id" maxlength="40"
+                 data-i18n-placeholder="ph_device_id" placeholder="co2-node-1"
+                 aria-describedby="help-device-id"
                  value='""" + device_id + """'>
+          <span class="help-text" id="help-device-id" data-i18n="help_device_id">Identifier sent with cloud and MQTT data.</span>
         </label>
 
-
-        <label>Upload interval (seconds)
-          <input type="number" name="cloud_interval_sec" min="15" max="3600"
+        <label for="field-cloud-interval">
+          <span class="lbl" data-i18n="lbl_cloud_interval">Upload interval (seconds)</span>
+          <input id="field-cloud-interval" type="number" name="cloud_interval_sec" min="15" max="3600"
                  value='""" + str(int(settings.get("cloud_interval_sec", 60))) + """'>
         </label>
         <small class="muted">
@@ -2282,24 +2731,110 @@ def render_settings_page():
 
       <!-- Device identity section removed; Device ID is now under Cloud telemetry and local endpoints moved to bottom. -->
 
+      <fieldset>
+        <legend data-i18n='sec_mqtt'>MQTT Broker (Home Assistant etc.)</legend>
+        <p class="help-text" data-i18n="help_mqtt">Publish readings to a local MQTT broker (e.g. Home Assistant).</p>
+        <label class="check-label">
+          <input type='checkbox' name='mqtt_enabled' """ + mqtt_checked + """
+                 data-i18n-aria="aria_mqtt_check">
+          <span data-i18n="lbl_mqtt_en">Enable MQTT publishing</span>
+        </label>
+        <label for="field-mqtt-broker">
+          <span class="lbl" data-i18n="lbl_mqtt_broker">Broker hostname/IP</span>
+          <input id="field-mqtt-broker" type='text' name='mqtt_broker' value='""" + mqtt_broker + """'
+                 data-i18n-placeholder="ph_mqtt_broker" placeholder='192.168.1.x or mqtt.example.com'>
+        </label>
+        <label for="field-mqtt-port">
+          <span class="lbl" data-i18n="lbl_mqtt_port">Port</span>
+          <input id="field-mqtt-port" type='number' name='mqtt_port' value='""" + mqtt_port + """' min='1' max='65535'>
+        </label>
+        <label for="field-mqtt-user">
+          <span class="lbl" data-i18n="lbl_mqtt_user">Username (optional)</span>
+          <input id="field-mqtt-user" type='text' name='mqtt_user' value='""" + mqtt_user + """'>
+        </label>
+        <label for="field-mqtt-pass">
+          <span class="lbl" data-i18n="lbl_mqtt_pass">Password (optional)</span>
+          <input id="field-mqtt-pass" type='password' name='mqtt_pass' placeholder='leave blank to keep current'>
+        </label>
+        <label for="field-mqtt-prefix">
+          <span class="lbl" data-i18n="lbl_mqtt_prefix">Topic prefix</span>
+          <input id="field-mqtt-prefix" type='text' name='mqtt_topic_prefix' value='""" + mqtt_topic_prefix + """'
+                 data-i18n-placeholder="ph_mqtt_prefix" placeholder='knowco2'>
+        </label>
+        <label for="field-mqtt-interval">
+          <span class="lbl" data-i18n="lbl_mqtt_interval">Publish interval (seconds)</span>
+          <input id="field-mqtt-interval" type='number' name='mqtt_interval_sec' value='""" + mqtt_interval + """' min='15' max='3600'>
+        </label>
+        <small>Topics: &lt;prefix&gt;/co2, &lt;prefix&gt;/temp_c, &lt;prefix&gt;/rh</small>
+      </fieldset>
+      <fieldset>
+        <legend data-i18n='sec_aio'>Adafruit IO</legend>
+        <p class="help-text" data-i18n="help_aio">Publish readings to Adafruit IO feeds.</p>
+        <label class="check-label">
+          <input type='checkbox' name='aio_enabled' """ + aio_checked + """
+                 data-i18n-aria="aria_aio_check">
+          <span data-i18n="lbl_aio_en">Enable Adafruit IO</span>
+        </label>
+        <label for="field-aio-user">
+          <span class="lbl" data-i18n="lbl_aio_user">AIO Username</span>
+          <input id="field-aio-user" type='text' name='aio_username' value='""" + aio_username + """'>
+        </label>
+        <label for="field-aio-key">
+          <span class="lbl">AIO Key</span>
+          <input id="field-aio-key" type='password' name='aio_key' placeholder='leave blank to keep current'>
+        </label>
+        <label for="field-aio-group">
+          <span class="lbl" data-i18n="lbl_aio_group">Feed group key</span>
+          <input id="field-aio-group" type='text' name='aio_group_key' value='""" + aio_group + """'
+                 data-i18n-placeholder="ph_aio_group" placeholder='knowco2'>
+        </label>
+        <label for="field-aio-interval">
+          <span class="lbl" data-i18n="lbl_aio_interval">Publish interval (seconds)</span>
+          <input id="field-aio-interval" type='number' name='aio_interval_sec' value='""" + aio_interval + """' min='15' max='3600'>
+        </label>
+        <small>Feeds: &lt;group&gt;.co2, &lt;group&gt;.temperature, &lt;group&gt;.humidity</small>
+      </fieldset>
+      <fieldset>
+        <legend data-i18n='sec_dim'>Display Dimming Schedule</legend>
+        <p class="help-text" data-i18n="help_dim">Automatically reduce display brightness during set hours. Requires NTP time sync.</p>
+        <label class="check-label">
+          <input type='checkbox' name='dim_enabled' """ + dim_checked + """
+                 data-i18n-aria="aria_dim_check">
+          <span data-i18n="lbl_dim_en">Enable scheduled dimming (requires NTP)</span>
+        </label>
+        <label for="field-dim-start">
+          <span class="lbl" data-i18n="lbl_dim_start">Dim start hour (0-23)</span>
+          <input id="field-dim-start" type='number' name='dim_start_hour' value='""" + dim_start + """' min='0' max='23'>
+        </label>
+        <label for="field-dim-end">
+          <span class="lbl" data-i18n="lbl_dim_end">Dim end hour (0-23)</span>
+          <input id="field-dim-end" type='number' name='dim_end_hour' value='""" + dim_end + """' min='0' max='23'>
+        </label>
+        <label for="field-dim-bright">
+          <span class="lbl" data-i18n="lbl_dim_bright">Brightness during dim period (0-100%)</span>
+          <input id="field-dim-bright" type='number' name='dim_brightness' value='""" + dim_brightness + """' min='0' max='100'>
+        </label>
+        <small>Example: start=22, end=7 dims from 10 PM to 7 AM.</small>
+      </fieldset>
+
       <div class="row">
-        <button type="submit">Save settings</button>
+        <button type="submit" class="btn btn-primary btn-block" data-i18n="save">Save settings</button>
       </div>
       <div class="row">
         <small>
           <b>Local endpoints:</b><br>
           • <code>GET /status</code> → live JSON status<br>
-          • <code>GET /data</code> → CO₂ history JSON (up to """ + str(MAX_WEB_POINTS) + """ points)
-        </small>
-      </div>
-      <div class="row">
-        <small>
-          <a href="/calibration" style="color:#00bcd4;">Calibration</a> – adjust altitude/pressure and force calibration
+          • <code>GET /data</code> → CO₂ history JSON (up to """ + str(MAX_WEB_POINTS) + """ points)<br>
+          • <code>GET /export.csv</code> → download CO₂ history as CSV
         </small>
       </div>
       <div class="row muted">
-        <small>Settings are saved to <code>settings.json</code>. If you see “USB mode: settings won't save”, eject CIRCUITPY from your computer.</small>
+        <small>Settings are saved to <code>settings.json</code>. If you see "USB mode: settings won't save", eject CIRCUITPY from your computer.</small>
       </div>
+      <nav class="page-nav" aria-label="Page navigation">
+        <a href="/calibration" data-i18n="nav_calib">Calibration</a>
+        <a href="/update" data-i18n="nav_ota" style="color:var(--danger)">Firmware Update</a>
+      </nav>
     </form>
   </div>
   <script>
@@ -2498,6 +3033,535 @@ def render_settings_page():
     setInterval(refreshChartFromServer, 5000);
     setInterval(refreshStatusFromServer, 5000);
   </script>
+  <p style='color:#666;font-size:12px;margin-top:12px' data-i18n='note_https'>Note: Local web server uses HTTP (HTTPS not supported in CircuitPython). Traffic stays on your LAN.</p>
+<script>
+// ---- Know CO2 Web UI i18n ----
+// Translations for key UI strings.  Applied client-side so no device reboot needed.
+// Language preference is stored in localStorage and also sent to device on form save.
+var T = {
+  en: {
+    title:"Know CO\u2082 Settings",save:"Save Settings",
+    sec_display:"Display & Thresholds",sec_wifi:"Wi-Fi",
+    sec_cloud:"Cloud Upload",sec_mqtt:"MQTT Broker",
+    sec_aio:"Adafruit IO",sec_dim:"Display Dimming",
+    sec_device:"Device",sec_calib:"Calibration",
+    lbl_low:"Low threshold (ppm)",lbl_med:"Medium threshold (ppm)",
+    lbl_alert:"Alert threshold (ppm)",lbl_temp:"Temperature unit",
+    lbl_alerts:"Enable alerts",lbl_scale:"Graph scale",
+    lbl_ap_ssid:"AP network name",lbl_ap_pass:"AP password",
+    lbl_sta_ssid:"Home Wi-Fi SSID",lbl_sta_pass:"Home Wi-Fi password",
+    lbl_cloud_url:"API URL",lbl_cloud_token:"Device token",
+    lbl_cloud_interval:"Upload interval (seconds)",lbl_cloud_en:"Enable cloud upload",
+    lbl_mqtt_en:"Enable MQTT publishing",lbl_mqtt_broker:"Broker hostname/IP",
+    lbl_aio_en:"Enable Adafruit IO",lbl_aio_user:"AIO Username",
+    lbl_dim_en:"Enable scheduled dimming (requires NTP)",
+    lbl_dim_start:"Dim start hour (0-23)",lbl_dim_end:"Dim end hour (0-23)",
+    lbl_dim_bright:"Brightness during dim period (0-100%)",
+    lbl_lang:"Interface Language",lbl_admin_pw:"Settings password",
+    lbl_device_id:"Device ID",btn_ota:"OTA Firmware Update",
+    note_dim:"Example: start=22, end=7 dims from 10 PM to 7 AM.",
+    note_https:"Note: Local web server uses HTTP (HTTPS not supported in CircuitPython). Traffic stays on your LAN.",
+    help_low:"CO\u2082 level below this is shown in green.",
+    help_med:"CO\u2082 level below this is shown in yellow.",
+    help_alert:"CO\u2082 level at or above this triggers an alert.",
+    help_device_id:"Identifier sent with cloud and MQTT data.",
+    help_admin_pw:"Leave blank to disable password protection.",
+    help_sta:"Enter your home Wi-Fi credentials to connect the device to your network.",
+    help_cloud:"Send CO\u2082 readings to the Know CO\u2082 cloud dashboard.",
+    help_mqtt:"Publish readings to a local MQTT broker (e.g. Home Assistant).",
+    help_aio:"Publish readings to Adafruit IO feeds.",
+    help_dim:"Automatically reduce display brightness during set hours. Requires NTP time sync.",
+    help_ota:"Download and install new firmware. The device will reboot after a successful update.",
+    lbl_regen:"Regenerate AP credentials",
+    lbl_sta_connect:"Connect to this network on next reboot",
+    lbl_mode_text:"Text",lbl_mode_big:"Big CO\u2082",lbl_mode_graph:"Graph",
+    lbl_scale_fixed:"400\u20132000 ppm (tight)",lbl_scale_wide:"400\u20133000 ppm (wide)",lbl_scale_auto:"Automatic",
+    lbl_max_pts:"History buffer (samples)",
+    lbl_cloud_secret:"Device secret / token",
+    lbl_mqtt_port:"Port",lbl_mqtt_user:"Username (optional)",lbl_mqtt_pass:"Password (optional)",
+    lbl_mqtt_prefix:"Topic prefix",lbl_mqtt_interval:"Publish interval (seconds)",
+    lbl_aio_group:"Feed group key",lbl_aio_interval:"Publish interval (seconds)",
+    nav_calib:"Calibration",nav_back:"Back to Settings",nav_ota:"Firmware Update",
+    ph_device_id:"co2-node-1",ph_sta_ssid:"Your Wi-Fi network name",ph_sta_pass:"Your Wi-Fi password",
+    ph_cloud_url:"https://api.knowco2.com/v1/ingest",ph_cloud_token:"Paste your device token here",
+    ph_mqtt_broker:"192.168.1.x or mqtt.example.com",ph_mqtt_prefix:"knowco2",
+    ph_aio_user:"your-adafruit-username",ph_aio_group:"knowco2",
+    ph_fw_url:"http://192.168.1.x/firmware.py",
+    aria_alerts_check:"Toggle CO\u2082 alert notifications",
+    aria_cloud_check:"Toggle cloud data upload",
+    aria_mqtt_check:"Toggle MQTT publishing",
+    aria_aio_check:"Toggle Adafruit IO publishing",
+    aria_dim_check:"Toggle scheduled display dimming",
+    skip_nav:"Skip to main content"
+  },
+  es: {
+    title:"Ajustes Know CO\u2082",save:"Guardar ajustes",
+    sec_display:"Pantalla y umbrales",sec_wifi:"Wi-Fi",
+    sec_cloud:"Subida a la nube",sec_mqtt:"Broker MQTT",
+    sec_aio:"Adafruit IO",sec_dim:"Atenuacion de pantalla",
+    sec_device:"Dispositivo",sec_calib:"Calibracion",
+    lbl_low:"Umbral bajo (ppm)",lbl_med:"Umbral medio (ppm)",
+    lbl_alert:"Umbral de alerta (ppm)",lbl_temp:"Unidad de temperatura",
+    lbl_alerts:"Activar alertas",lbl_scale:"Escala del grafico",
+    lbl_ap_ssid:"Nombre de red AP",lbl_ap_pass:"Contrasena AP",
+    lbl_sta_ssid:"SSID Wi-Fi del hogar",lbl_sta_pass:"Contrasena Wi-Fi",
+    lbl_cloud_url:"URL de la API",lbl_cloud_token:"Token del dispositivo",
+    lbl_cloud_interval:"Intervalo de subida (segundos)",lbl_cloud_en:"Activar subida a la nube",
+    lbl_mqtt_en:"Activar publicacion MQTT",lbl_mqtt_broker:"Servidor/IP del broker",
+    lbl_aio_en:"Activar Adafruit IO",lbl_aio_user:"Usuario AIO",
+    lbl_dim_en:"Activar atenuacion programada (requiere NTP)",
+    lbl_dim_start:"Hora inicio (0-23)",lbl_dim_end:"Hora fin (0-23)",
+    lbl_dim_bright:"Brillo durante atenuacion (0-100%)",
+    lbl_lang:"Idioma de la interfaz",lbl_admin_pw:"Contrasena de ajustes",
+    lbl_device_id:"ID del dispositivo",btn_ota:"Actualizar firmware (OTA)",
+    note_dim:"Ejemplo: inicio=22, fin=7 atenua de 22:00 a 07:00.",
+    note_https:"Nota: El servidor web usa HTTP. El trafico permanece en su red local.",
+    help_low:"El nivel de CO\u2082 por debajo de este se muestra en verde.",
+    help_med:"El nivel de CO\u2082 por debajo de este se muestra en amarillo.",
+    help_alert:"El nivel de CO\u2082 igual o superior a este activa una alerta.",
+    help_device_id:"Identificador enviado con los datos de nube y MQTT.",
+    help_admin_pw:"Dejar en blanco para desactivar la proteccion por contrasena.",
+    help_sta:"Introduce las credenciales de tu Wi-Fi para conectar el dispositivo.",
+    help_cloud:"Envia lecturas de CO\u2082 al panel de Know CO\u2082.",
+    help_mqtt:"Publica lecturas en un broker MQTT local (p. ej. Home Assistant).",
+    help_aio:"Publica lecturas en feeds de Adafruit IO.",
+    help_dim:"Reduce automaticamente el brillo en las horas configuradas. Requiere NTP.",
+    help_ota:"Descarga e instala nuevo firmware. El dispositivo se reiniciara.",
+    lbl_regen:"Regenerar credenciales AP",lbl_sta_connect:"Conectar en el proximo reinicio",
+    lbl_mode_text:"Texto",lbl_mode_big:"CO\u2082 grande",lbl_mode_graph:"Grafico",
+    lbl_scale_fixed:"400\u20132000 ppm (ajustado)",lbl_scale_wide:"400\u20133000 ppm (amplio)",lbl_scale_auto:"Automatico",
+    lbl_max_pts:"Buffer de historial (muestras)",lbl_cloud_secret:"Secreto/token del dispositivo",
+    lbl_mqtt_port:"Puerto",lbl_mqtt_user:"Usuario (opcional)",lbl_mqtt_pass:"Contrasena (opcional)",
+    lbl_mqtt_prefix:"Prefijo del topic",lbl_mqtt_interval:"Intervalo de publicacion (segundos)",
+    lbl_aio_group:"Clave de grupo de feeds",lbl_aio_interval:"Intervalo de publicacion (segundos)",
+    nav_calib:"Calibracion",nav_back:"Volver a Ajustes",nav_ota:"Actualizar firmware",
+    ph_device_id:"co2-node-1",ph_sta_ssid:"Nombre de tu red Wi-Fi",ph_sta_pass:"Contrasena Wi-Fi",
+    ph_cloud_url:"https://api.knowco2.com/v1/ingest",ph_cloud_token:"Pega tu token aqui",
+    ph_mqtt_broker:"192.168.1.x o mqtt.ejemplo.com",ph_mqtt_prefix:"knowco2",
+    ph_aio_user:"tu-usuario-adafruit",ph_aio_group:"knowco2",
+    ph_fw_url:"http://192.168.1.x/firmware.py",
+    aria_alerts_check:"Activar o desactivar alertas de CO\u2082",
+    aria_cloud_check:"Activar o desactivar subida de datos a la nube",
+    aria_mqtt_check:"Activar o desactivar publicacion MQTT",
+    aria_aio_check:"Activar o desactivar publicacion en Adafruit IO",
+    aria_dim_check:"Activar o desactivar atenuacion programada",
+    skip_nav:"Saltar al contenido principal"
+  },
+  fr: {
+    title:"Parametres Know CO\u2082",save:"Enregistrer",
+    sec_display:"Affichage et seuils",sec_wifi:"Wi-Fi",
+    sec_cloud:"Envoi vers le cloud",sec_mqtt:"Broker MQTT",
+    sec_aio:"Adafruit IO",sec_dim:"Attenuation ecran",
+    sec_device:"Appareil",sec_calib:"Calibration",
+    lbl_low:"Seuil bas (ppm)",lbl_med:"Seuil moyen (ppm)",
+    lbl_alert:"Seuil d'alerte (ppm)",lbl_temp:"Unite de temperature",
+    lbl_alerts:"Activer les alertes",lbl_scale:"Echelle du graphique",
+    lbl_ap_ssid:"Nom du reseau AP",lbl_ap_pass:"Mot de passe AP",
+    lbl_sta_ssid:"SSID Wi-Fi domicile",lbl_sta_pass:"Mot de passe Wi-Fi",
+    lbl_cloud_url:"URL de l'API",lbl_cloud_token:"Token de l'appareil",
+    lbl_cloud_interval:"Intervalle d'envoi (secondes)",lbl_cloud_en:"Activer l'envoi cloud",
+    lbl_mqtt_en:"Activer la publication MQTT",lbl_mqtt_broker:"Hote/IP du broker",
+    lbl_aio_en:"Activer Adafruit IO",lbl_aio_user:"Utilisateur AIO",
+    lbl_dim_en:"Activer l'attenuation programmee (NTP requis)",
+    lbl_dim_start:"Heure debut (0-23)",lbl_dim_end:"Heure fin (0-23)",
+    lbl_dim_bright:"Luminosite en periode d'attenuation (0-100%)",
+    lbl_lang:"Langue de l'interface",lbl_admin_pw:"Mot de passe des parametres",
+    lbl_device_id:"ID de l'appareil",btn_ota:"Mise a jour OTA",
+    note_dim:"Exemple: debut=22, fin=7 attenue de 22h a 7h.",
+    note_https:"Note: Le serveur web utilise HTTP. Le trafic reste sur votre reseau local.",
+    help_low:"Le niveau de CO\u2082 en dessous est affiche en vert.",
+    help_med:"Le niveau de CO\u2082 en dessous est affiche en jaune.",
+    help_alert:"Le niveau de CO\u2082 egal ou superieur declenche une alerte.",
+    help_device_id:"Identifiant envoye avec les donnees cloud et MQTT.",
+    help_admin_pw:"Laisser vide pour desactiver la protection par mot de passe.",
+    help_sta:"Entrez vos identifiants Wi-Fi pour connecter l'appareil.",
+    help_cloud:"Envoyez les mesures de CO\u2082 au tableau de bord Know CO\u2082.",
+    help_mqtt:"Publiez les mesures sur un broker MQTT local (ex. Home Assistant).",
+    help_aio:"Publiez les mesures sur des feeds Adafruit IO.",
+    help_dim:"Reduit automatiquement la luminosite aux heures configurees. NTP requis.",
+    help_ota:"Telechargez et installez un nouveau firmware. L'appareil redemarrera.",
+    lbl_regen:"Regenerer les identifiants AP",lbl_sta_connect:"Connecter au prochain redemarrage",
+    lbl_mode_text:"Texte",lbl_mode_big:"Grand CO\u2082",lbl_mode_graph:"Graphique",
+    lbl_scale_fixed:"400\u20132000 ppm (serre)",lbl_scale_wide:"400\u20133000 ppm (large)",lbl_scale_auto:"Automatique",
+    lbl_max_pts:"Tampon d'historique (echantillons)",lbl_cloud_secret:"Secret/token de l'appareil",
+    lbl_mqtt_port:"Port",lbl_mqtt_user:"Utilisateur (optionnel)",lbl_mqtt_pass:"Mot de passe (optionnel)",
+    lbl_mqtt_prefix:"Prefixe du sujet",lbl_mqtt_interval:"Intervalle de publication (secondes)",
+    lbl_aio_group:"Cle du groupe de feeds",lbl_aio_interval:"Intervalle de publication (secondes)",
+    nav_calib:"Calibration",nav_back:"Retour aux parametres",nav_ota:"Mise a jour firmware",
+    ph_device_id:"co2-noeud-1",ph_sta_ssid:"Nom de votre reseau Wi-Fi",ph_sta_pass:"Mot de passe Wi-Fi",
+    ph_cloud_url:"https://api.knowco2.com/v1/ingest",ph_cloud_token:"Collez votre token ici",
+    ph_mqtt_broker:"192.168.1.x ou mqtt.exemple.com",ph_mqtt_prefix:"knowco2",
+    ph_aio_user:"votre-utilisateur-adafruit",ph_aio_group:"knowco2",
+    ph_fw_url:"http://192.168.1.x/firmware.py",
+    aria_alerts_check:"Activer ou desactiver les alertes CO\u2082",
+    aria_cloud_check:"Activer ou desactiver l'envoi de donnees vers le cloud",
+    aria_mqtt_check:"Activer ou desactiver la publication MQTT",
+    aria_aio_check:"Activer ou desactiver la publication Adafruit IO",
+    aria_dim_check:"Activer ou desactiver l'attenuation programmee",
+    skip_nav:"Aller au contenu principal"
+  },
+  de: {
+    title:"Know CO\u2082 Einstellungen",save:"Einstellungen speichern",
+    sec_display:"Anzeige & Schwellenwerte",sec_wifi:"Wi-Fi",
+    sec_cloud:"Cloud-Upload",sec_mqtt:"MQTT-Broker",
+    sec_aio:"Adafruit IO",sec_dim:"Bildschirmabdunkelung",
+    sec_device:"Gerat",sec_calib:"Kalibrierung",
+    lbl_low:"Niedriger Schwellenwert (ppm)",lbl_med:"Mittlerer Schwellenwert (ppm)",
+    lbl_alert:"Alarmschwelle (ppm)",lbl_temp:"Temperatureinheit",
+    lbl_alerts:"Alarme aktivieren",lbl_scale:"Diagrammskalierung",
+    lbl_ap_ssid:"AP-Netzwerkname",lbl_ap_pass:"AP-Passwort",
+    lbl_sta_ssid:"WLAN-SSID zuhause",lbl_sta_pass:"WLAN-Passwort",
+    lbl_cloud_url:"API-URL",lbl_cloud_token:"Gerate-Token",
+    lbl_cloud_interval:"Upload-Intervall (Sekunden)",lbl_cloud_en:"Cloud-Upload aktivieren",
+    lbl_mqtt_en:"MQTT-Veroffentlichung aktivieren",lbl_mqtt_broker:"Broker-Host/IP",
+    lbl_aio_en:"Adafruit IO aktivieren",lbl_aio_user:"AIO-Benutzername",
+    lbl_dim_en:"Geplante Abdunkelung aktivieren (NTP erforderlich)",
+    lbl_dim_start:"Startzeit (0-23)",lbl_dim_end:"Endzeit (0-23)",
+    lbl_dim_bright:"Helligkeit wahrend Abdunkelung (0-100%)",
+    lbl_lang:"Oberflachensprache",lbl_admin_pw:"Einstellungspasswort",
+    lbl_device_id:"Gerate-ID",btn_ota:"Firmware-Update (OTA)",
+    note_dim:"Beispiel: Start=22, Ende=7 dunkelt von 22 bis 7 Uhr ab.",
+    note_https:"Hinweis: Webserver nutzt HTTP. Datenverkehr bleibt im lokalen Netz.",
+    help_low:"CO\u2082-Wert darunter wird grun angezeigt.",
+    help_med:"CO\u2082-Wert darunter wird gelb angezeigt.",
+    help_alert:"CO\u2082-Wert gleich oder daruber lost Alarm aus.",
+    help_device_id:"Kennung, die mit Cloud- und MQTT-Daten gesendet wird.",
+    help_admin_pw:"Leer lassen, um Passwortschutz zu deaktivieren.",
+    help_sta:"WLAN-Zugangsdaten eingeben, um das Gerat zu verbinden.",
+    help_cloud:"CO\u2082-Messwerte an das Know CO\u2082-Dashboard senden.",
+    help_mqtt:"Messwerte an einen lokalen MQTT-Broker senden (z.B. Home Assistant).",
+    help_aio:"Messwerte an Adafruit IO-Feeds senden.",
+    help_dim:"Displayhelligkeit automatisch reduzieren. NTP erforderlich.",
+    help_ota:"Neue Firmware herunterladen und installieren. Gerat startet neu.",
+    lbl_regen:"AP-Zugangsdaten neu generieren",lbl_sta_connect:"Beim nachsten Neustart verbinden",
+    lbl_mode_text:"Text",lbl_mode_big:"Grosses CO\u2082",lbl_mode_graph:"Diagramm",
+    lbl_scale_fixed:"400\u20132000 ppm (eng)",lbl_scale_wide:"400\u20133000 ppm (weit)",lbl_scale_auto:"Automatisch",
+    lbl_max_pts:"Verlaufspuffer (Messwerte)",lbl_cloud_secret:"Gerate-Geheimnis/Token",
+    lbl_mqtt_port:"Port",lbl_mqtt_user:"Benutzer (optional)",lbl_mqtt_pass:"Passwort (optional)",
+    lbl_mqtt_prefix:"Topic-Prafix",lbl_mqtt_interval:"Veroffentlichungsintervall (Sekunden)",
+    lbl_aio_group:"Feed-Gruppenschlussel",lbl_aio_interval:"Veroffentlichungsintervall (Sekunden)",
+    nav_calib:"Kalibrierung",nav_back:"Zuruck zu Einstellungen",nav_ota:"Firmware-Update",
+    ph_device_id:"co2-knoten-1",ph_sta_ssid:"Ihr WLAN-Netzwerkname",ph_sta_pass:"Ihr WLAN-Passwort",
+    ph_cloud_url:"https://api.knowco2.com/v1/ingest",ph_cloud_token:"Token hier einfugen",
+    ph_mqtt_broker:"192.168.1.x oder mqtt.beispiel.de",ph_mqtt_prefix:"knowco2",
+    ph_aio_user:"ihr-adafruit-benutzername",ph_aio_group:"knowco2",
+    ph_fw_url:"http://192.168.1.x/firmware.py",
+    aria_alerts_check:"CO\u2082-Benachrichtigungen ein- oder ausschalten",
+    aria_cloud_check:"Cloud-Datenuploads ein- oder ausschalten",
+    aria_mqtt_check:"MQTT-Veroffentlichung ein- oder ausschalten",
+    aria_aio_check:"Adafruit IO Veroffentlichung ein- oder ausschalten",
+    aria_dim_check:"Geplante Abdunkelung ein- oder ausschalten",
+    skip_nav:"Zum Hauptinhalt springen"
+  },
+  pt: {
+    title:"Configuracoes Know CO\u2082",save:"Salvar configuracoes",
+    sec_display:"Tela e limiares",sec_wifi:"Wi-Fi",
+    sec_cloud:"Envio para nuvem",sec_mqtt:"Broker MQTT",
+    sec_aio:"Adafruit IO",sec_dim:"Reducao do brilho",
+    sec_device:"Dispositivo",sec_calib:"Calibracao",
+    lbl_low:"Limiar baixo (ppm)",lbl_med:"Limiar medio (ppm)",
+    lbl_alert:"Limiar de alerta (ppm)",lbl_temp:"Unidade de temperatura",
+    lbl_alerts:"Ativar alertas",lbl_scale:"Escala do grafico",
+    lbl_ap_ssid:"Nome da rede AP",lbl_ap_pass:"Senha AP",
+    lbl_sta_ssid:"SSID Wi-Fi casa",lbl_sta_pass:"Senha Wi-Fi",
+    lbl_cloud_url:"URL da API",lbl_cloud_token:"Token do dispositivo",
+    lbl_cloud_interval:"Intervalo de envio (segundos)",lbl_cloud_en:"Ativar envio para nuvem",
+    lbl_mqtt_en:"Ativar publicacao MQTT",lbl_mqtt_broker:"Host/IP do broker",
+    lbl_aio_en:"Ativar Adafruit IO",lbl_aio_user:"Usuario AIO",
+    lbl_dim_en:"Ativar reducao de brilho programada (requer NTP)",
+    lbl_dim_start:"Hora de inicio (0-23)",lbl_dim_end:"Hora de fim (0-23)",
+    lbl_dim_bright:"Brilho durante reducao (0-100%)",
+    lbl_lang:"Idioma da interface",lbl_admin_pw:"Senha das configuracoes",
+    lbl_device_id:"ID do dispositivo",btn_ota:"Atualizacao OTA",
+    note_dim:"Exemplo: inicio=22, fim=7 reduz das 22h as 7h.",
+    note_https:"Nota: Servidor web usa HTTP. Trafego fica na rede local.",
+    help_low:"Nivel de CO\u2082 abaixo deste e exibido em verde.",
+    help_med:"Nivel de CO\u2082 abaixo deste e exibido em amarelo.",
+    help_alert:"Nivel de CO\u2082 igual ou acima deste dispara um alerta.",
+    help_device_id:"Identificador enviado com dados de nuvem e MQTT.",
+    help_admin_pw:"Deixe em branco para desativar a protecao por senha.",
+    help_sta:"Insira as credenciais Wi-Fi para conectar o dispositivo.",
+    help_cloud:"Envie leituras de CO\u2082 para o painel Know CO\u2082.",
+    help_mqtt:"Publique leituras em um broker MQTT local (ex. Home Assistant).",
+    help_aio:"Publique leituras em feeds do Adafruit IO.",
+    help_dim:"Reduce automaticamente o brilho nos horarios configurados. Requer NTP.",
+    help_ota:"Baixe e instale novo firmware. O dispositivo vai reiniciar.",
+    lbl_regen:"Regenerar credenciais AP",lbl_sta_connect:"Conectar no proximo reinicio",
+    lbl_mode_text:"Texto",lbl_mode_big:"CO\u2082 grande",lbl_mode_graph:"Grafico",
+    lbl_scale_fixed:"400\u20132000 ppm (estreito)",lbl_scale_wide:"400\u20133000 ppm (largo)",lbl_scale_auto:"Automatico",
+    lbl_max_pts:"Buffer de historico (amostras)",lbl_cloud_secret:"Segredo/token do dispositivo",
+    lbl_mqtt_port:"Porta",lbl_mqtt_user:"Usuario (opcional)",lbl_mqtt_pass:"Senha (opcional)",
+    lbl_mqtt_prefix:"Prefixo do topico",lbl_mqtt_interval:"Intervalo de publicacao (segundos)",
+    lbl_aio_group:"Chave do grupo de feeds",lbl_aio_interval:"Intervalo de publicacao (segundos)",
+    nav_calib:"Calibracao",nav_back:"Voltar as Configuracoes",nav_ota:"Atualizar firmware",
+    ph_device_id:"co2-node-1",ph_sta_ssid:"Nome da sua rede Wi-Fi",ph_sta_pass:"Senha Wi-Fi",
+    ph_cloud_url:"https://api.knowco2.com/v1/ingest",ph_cloud_token:"Cole seu token aqui",
+    ph_mqtt_broker:"192.168.1.x ou mqtt.exemplo.com",ph_mqtt_prefix:"knowco2",
+    ph_aio_user:"seu-usuario-adafruit",ph_aio_group:"knowco2",
+    ph_fw_url:"http://192.168.1.x/firmware.py",
+    aria_alerts_check:"Ativar ou desativar alertas de CO\u2082",
+    aria_cloud_check:"Ativar ou desativar upload de dados para a nuvem",
+    aria_mqtt_check:"Ativar ou desativar publicacao MQTT",
+    aria_aio_check:"Ativar ou desativar publicacao no Adafruit IO",
+    aria_dim_check:"Ativar ou desativar reducao de brilho programada",
+    skip_nav:"Ir para o conteudo principal"
+  },
+  it: {
+    title:"Impostazioni Know CO\u2082",save:"Salva impostazioni",
+    sec_display:"Display e soglie",sec_wifi:"Wi-Fi",
+    sec_cloud:"Caricamento cloud",sec_mqtt:"Broker MQTT",
+    sec_aio:"Adafruit IO",sec_dim:"Attenuazione display",
+    sec_device:"Dispositivo",sec_calib:"Calibrazione",
+    lbl_low:"Soglia bassa (ppm)",lbl_med:"Soglia media (ppm)",
+    lbl_alert:"Soglia di allarme (ppm)",lbl_temp:"Unita di temperatura",
+    lbl_alerts:"Abilita allarmi",lbl_scale:"Scala del grafico",
+    lbl_ap_ssid:"Nome rete AP",lbl_ap_pass:"Password AP",
+    lbl_sta_ssid:"SSID Wi-Fi casa",lbl_sta_pass:"Password Wi-Fi",
+    lbl_cloud_url:"URL API",lbl_cloud_token:"Token dispositivo",
+    lbl_cloud_interval:"Intervallo upload (secondi)",lbl_cloud_en:"Abilita upload cloud",
+    lbl_mqtt_en:"Abilita pubblicazione MQTT",lbl_mqtt_broker:"Host/IP broker",
+    lbl_aio_en:"Abilita Adafruit IO",lbl_aio_user:"Utente AIO",
+    lbl_dim_en:"Abilita attenuazione programmata (richiede NTP)",
+    lbl_dim_start:"Ora inizio (0-23)",lbl_dim_end:"Ora fine (0-23)",
+    lbl_dim_bright:"Luminosita durante attenuazione (0-100%)",
+    lbl_lang:"Lingua interfaccia",lbl_admin_pw:"Password impostazioni",
+    lbl_device_id:"ID dispositivo",btn_ota:"Aggiornamento OTA",
+    note_dim:"Esempio: inizio=22, fine=7 attenua dalle 22 alle 7.",
+    note_https:"Nota: Il server web usa HTTP. Il traffico resta sulla rete locale.",
+    help_low:"Il livello di CO\u2082 sotto questo viene mostrato in verde.",
+    help_med:"Il livello di CO\u2082 sotto questo viene mostrato in giallo.",
+    help_alert:"Il livello di CO\u2082 uguale o superiore attiva un allarme.",
+    help_device_id:"Identificatore inviato con i dati cloud e MQTT.",
+    help_admin_pw:"Lasciare vuoto per disabilitare la protezione con password.",
+    help_sta:"Inserisci le credenziali Wi-Fi per connettere il dispositivo.",
+    help_cloud:"Invia le letture di CO\u2082 al pannello Know CO\u2082.",
+    help_mqtt:"Pubblica le letture su un broker MQTT locale (es. Home Assistant).",
+    help_aio:"Pubblica le letture su feed di Adafruit IO.",
+    help_dim:"Riduce automaticamente la luminosita nelle ore configurate. Richiede NTP.",
+    help_ota:"Scarica e installa nuovo firmware. Il dispositivo si riavviera.",
+    lbl_regen:"Rigenera credenziali AP",lbl_sta_connect:"Connetti al prossimo riavvio",
+    lbl_mode_text:"Testo",lbl_mode_big:"CO\u2082 grande",lbl_mode_graph:"Grafico",
+    lbl_scale_fixed:"400\u20132000 ppm (stretto)",lbl_scale_wide:"400\u20133000 ppm (ampio)",lbl_scale_auto:"Automatico",
+    lbl_max_pts:"Buffer storico (campioni)",lbl_cloud_secret:"Segreto/token del dispositivo",
+    lbl_mqtt_port:"Porta",lbl_mqtt_user:"Utente (opzionale)",lbl_mqtt_pass:"Password (opzionale)",
+    lbl_mqtt_prefix:"Prefisso topic",lbl_mqtt_interval:"Intervallo di pubblicazione (secondi)",
+    lbl_aio_group:"Chiave gruppo feed",lbl_aio_interval:"Intervallo di pubblicazione (secondi)",
+    nav_calib:"Calibrazione",nav_back:"Torna alle Impostazioni",nav_ota:"Aggiornamento firmware",
+    ph_device_id:"co2-nodo-1",ph_sta_ssid:"Nome della tua rete Wi-Fi",ph_sta_pass:"Password Wi-Fi",
+    ph_cloud_url:"https://api.knowco2.com/v1/ingest",ph_cloud_token:"Incolla il tuo token qui",
+    ph_mqtt_broker:"192.168.1.x o mqtt.esempio.com",ph_mqtt_prefix:"knowco2",
+    ph_aio_user:"tuo-utente-adafruit",ph_aio_group:"knowco2",
+    ph_fw_url:"http://192.168.1.x/firmware.py",
+    aria_alerts_check:"Attiva o disattiva gli avvisi CO\u2082",
+    aria_cloud_check:"Attiva o disattiva il caricamento cloud",
+    aria_mqtt_check:"Attiva o disattiva la pubblicazione MQTT",
+    aria_aio_check:"Attiva o disattiva la pubblicazione Adafruit IO",
+    aria_dim_check:"Attiva o disattiva l'attenuazione programmata",
+    skip_nav:"Vai al contenuto principale"
+  },
+  ja: {
+    title:"Know CO\u2082 \u8a2d\u5b9a",save:"\u8a2d\u5b9a\u3092\u4fdd\u5b58",
+    sec_display:"\u8868\u793a\u3068\u3057\u304d\u3044\u5024",sec_wifi:"Wi-Fi",
+    sec_cloud:"\u30af\u30e9\u30a6\u30c9\u30a2\u30c3\u30d7\u30ed\u30fc\u30c9",sec_mqtt:"MQTT\u30d6\u30ed\u30fc\u30ab\u30fc",
+    sec_aio:"Adafruit IO",sec_dim:"\u753b\u9762\u8abf\u5149",
+    sec_device:"\u30c7\u30d0\u30a4\u30b9",sec_calib:"\u30ad\u30e3\u30ea\u30d6\u30ec\u30fc\u30b7\u30e7\u30f3",
+    lbl_low:"\u4f4e\u3057\u304d\u3044\u5024 (ppm)",lbl_med:"\u4e2d\u3057\u304d\u3044\u5024 (ppm)",
+    lbl_alert:"\u8b66\u544a\u3057\u304d\u3044\u5024 (ppm)",lbl_temp:"\u6e29\u5ea6\u5358\u4f4d",
+    lbl_alerts:"\u30a2\u30e9\u30fc\u30c8\u3092\u6709\u52b9\u306b\u3059\u308b",lbl_scale:"\u30b0\u30e9\u30d5\u30b9\u30b1\u30fc\u30eb",
+    lbl_ap_ssid:"AP\u30cd\u30c3\u30c8\u30ef\u30fc\u30af\u540d",lbl_ap_pass:"AP\u30d1\u30b9\u30ef\u30fc\u30c9",
+    lbl_sta_ssid:"\u30db\u30fcWi-Fi SSID",lbl_sta_pass:"Wi-Fi\u30d1\u30b9\u30ef\u30fc\u30c9",
+    lbl_cloud_url:"API URL",lbl_cloud_token:"\u30c7\u30d0\u30a4\u30b9\u30c8\u30fc\u30af\u30f3",
+    lbl_cloud_interval:"\u9001\u4fe1\u9593\u9694\uff08\u79d2\uff09",lbl_cloud_en:"\u30af\u30e9\u30a6\u30c9\u30a2\u30c3\u30d7\u30ed\u30fc\u30c9\u3092\u6709\u52b9\u306b\u3059\u308b",
+    lbl_mqtt_en:"MQTT\u914d\u4fe1\u3092\u6709\u52b9\u306b\u3059\u308b",lbl_mqtt_broker:"\u30d6\u30ed\u30fc\u30ab\u30fc\u30db\u30b9\u30c8/IP",
+    lbl_aio_en:"Adafruit IO\u3092\u6709\u52b9\u306b\u3059\u308b",lbl_aio_user:"AIO\u30e6\u30fc\u30b6\u30fc\u540d",
+    lbl_dim_en:"\u30b9\u30b1\u30b8\u30e5\u30fc\u30eb\u8abf\u5149\u3092\u6709\u52b9\u306b\u3059\u308b\uff08NTP\u5fc5\u8981\uff09",
+    lbl_dim_start:"\u958b\u59cb\u6642\u523b (0-23)",lbl_dim_end:"\u7d42\u4e86\u6642\u523b (0-23)",
+    lbl_dim_bright:"\u8abf\u5149\u4e2d\u306e\u8f1d\u5ea6 (0-100%)",
+    lbl_lang:"\u30a4\u30f3\u30bf\u30fc\u30d5\u30a7\u30fc\u30b9\u8a00\u8a9e",lbl_admin_pw:"\u8a2d\u5b9a\u30d1\u30b9\u30ef\u30fc\u30c9",
+    lbl_device_id:"\u30c7\u30d0\u30a4\u30b9ID",btn_ota:"OTA\u30d5\u30a1\u30fc\u30e0\u30a6\u30a7\u30a2\u66f4\u65b0",
+    note_dim:"\u4f8b: \u958b\u59cb=22, \u7d42\u4e86=7\u306f22\u664200\u5206\u304b\u307a7\u664200\u5206\u307e\u3067\u8abf\u5149\u3002",
+    note_https:"\u6ce8\u610f: \u30ed\u30fc\u30ab\u30eb\u30b5\u30fc\u30d0\u30fc\u306fHTTP\u3092\u4f7f\u7528\u3002\u901a\u4fe1\u306fLAN\u5185\u306b\u3068\u3069\u307e\u308a\u307e\u3059\u3002",
+    help_low:"CO\u2082\u30ec\u30d9\u30eb\u304c\u3053\u308c\u4ee5\u4e0b\u306e\u5834\u5408\u7dd1\u8272\u3067\u8868\u793a\u3002",
+    help_med:"CO\u2082\u30ec\u30d9\u30eb\u304c\u3053\u308c\u4ee5\u4e0b\u306e\u5834\u5408\u9ec4\u8272\u3067\u8868\u793a\u3002",
+    help_alert:"\u3053\u306e\u5024\u4ee5\u4e0a\u306eCO\u2082\u30ec\u30d9\u30eb\u3067\u30a2\u30e9\u30fc\u30c8\u3002",
+    help_device_id:"\u30af\u30e9\u30a6\u30c9\u304a\u3088\u3073MQTT\u30c7\u30fc\u30bf\u306b\u9644\u52a0\u3055\u308c\u308b\u8b58\u5225\u5b50\u3002",
+    help_admin_pw:"\u30d1\u30b9\u30ef\u30fc\u30c9\u3092\u7121\u52b9\u306b\u3059\u308b\u306b\u306f\u7a7a\u767d\u306b\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+    help_sta:"Wi-Fi\u8cc7\u683c\u60c5\u5831\u3092\u5165\u529b\u3057\u3066\u30c7\u30d0\u30a4\u30b9\u3092\u63a5\u7d9a\u3002",
+    help_cloud:"CO\u2082\u8a08\u6e2c\u5024\u3092Know CO\u2082\u30c0\u30c3\u30b7\u30e5\u30dc\u30fc\u30c9\u306b\u9001\u4fe1\u3002",
+    help_mqtt:"\u30ed\u30fc\u30ab\u30ebMQTT\u30d6\u30ed\u30fc\u30ab\u30fc\u306b\u8a08\u6e2c\u5024\u3092\u9001\u4fe1\u3002",
+    help_aio:"Adafruit IO\u30d5\u30a3\u30fc\u30c9\u306b\u8a08\u6e2c\u5024\u3092\u9001\u4fe1\u3002",
+    help_dim:"\u8a2d\u5b9a\u6642\u9593\u306b\u81ea\u52d5\u3067\u753b\u9762\u3092\u6697\u304f\u3059\u308b\u3002NTP\u5fc5\u8981\u3002",
+    help_ota:"\u65b0\u3057\u3044\u30d5\u30a1\u30fc\u30e0\u30a6\u30a7\u30a2\u3092\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u3057\u30a4\u30f3\u30b9\u30c8\u30fc\u30eb\u3002",
+    lbl_regen:"AP\u8cc7\u683c\u60c5\u5831\u3092\u518d\u751f\u6210",lbl_sta_connect:"\u6b21\u306e\u518d\u8d77\u52d5\u6642\u306b\u63a5\u7d9a",
+    lbl_mode_text:"\u30c6\u30ad\u30b9\u30c8",lbl_mode_big:"\u5927\u304dCO\u2082",lbl_mode_graph:"\u30b0\u30e9\u30d5",
+    lbl_scale_fixed:"400\u20132000 ppm (\u9577\u65b9\u5f62)",lbl_scale_wide:"400\u20133000 ppm (\u5e83\u3044)",lbl_scale_auto:"\u81ea\u52d5",
+    lbl_max_pts:"\u5c65\u6b74\u30d0\u30c3\u30d5\u30a1\uff08\u30b5\u30f3\u30d7\u30eb\uff09",lbl_cloud_secret:"\u30c7\u30d0\u30a4\u30b9\u30b7\u30fc\u30af\u30ec\u30c3\u30c8/\u30c8\u30fc\u30af\u30f3",
+    lbl_mqtt_port:"\u30dd\u30fc\u30c8",lbl_mqtt_user:"\u30e6\u30fc\u30b6\u30fc\uff08\u4efb\u610f\uff09",lbl_mqtt_pass:"\u30d1\u30b9\u30ef\u30fc\u30c9\uff08\u4efb\u610f\uff09",
+    lbl_mqtt_prefix:"\u30c8\u30d4\u30c3\u30af\u30d7\u30ec\u30d5\u30a3\u30c3\u30af\u30b9",lbl_mqtt_interval:"\u9001\u4fe1\u9593\u9694\uff08\u79d2\uff09",
+    lbl_aio_group:"\u30d5\u30a3\u30fc\u30c9\u30b0\u30eb\u30fc\u30d7\u30ad\u30fc",lbl_aio_interval:"\u9001\u4fe1\u9593\u9694\uff08\u79d2\uff09",
+    nav_calib:"\u30ad\u30e3\u30ea\u30d6\u30ec\u30fc\u30b7\u30e7\u30f3",nav_back:"\u8a2d\u5b9a\u306b\u623b\u308b",nav_ota:"\u30d5\u30a1\u30fc\u30e0\u30a6\u30a7\u30a2\u66f4\u65b0",
+    ph_device_id:"co2-node-1",ph_sta_ssid:"Wi-Fi\u30cd\u30c3\u30c8\u30ef\u30fc\u30af\u540d",ph_sta_pass:"Wi-Fi\u30d1\u30b9\u30ef\u30fc\u30c9",
+    ph_cloud_url:"https://api.knowco2.com/v1/ingest",ph_cloud_token:"\u30c8\u30fc\u30af\u30f3\u3092\u8cbc\u308a\u4ed8\u3051",
+    ph_mqtt_broker:"192.168.1.x \u307e\u305f\u306f mqtt.\u4f8b\u3002com",ph_mqtt_prefix:"knowco2",
+    ph_aio_user:"adafruit\u30e6\u30fc\u30b6\u30fc\u540d",ph_aio_group:"knowco2",
+    ph_fw_url:"http://192.168.1.x/firmware.py",
+    aria_alerts_check:"CO\u2082\u8b66\u544a\u901a\u77e5\u306e\u5207\u308a\u66ff\u3048",
+    aria_cloud_check:"\u30af\u30e9\u30a6\u30c9\u30c7\u30fc\u30bf\u9001\u4fe1\u306e\u5207\u308a\u66ff\u3048",
+    aria_mqtt_check:"MQTT\u914d\u4fe1\u306e\u5207\u308a\u66ff\u3048",
+    aria_aio_check:"Adafruit IO\u914d\u4fe1\u306e\u5207\u308a\u66ff\u3048",
+    aria_dim_check:"\u30b9\u30b1\u30b8\u30e5\u30fc\u30eb\u8abf\u5149\u306e\u5207\u308a\u66ff\u3048",
+    skip_nav:"\u30e1\u30a4\u30f3\u30b3\u30f3\u30c6\u30f3\u30c4\u306b\u30b9\u30ad\u30c3\u30d7"
+  },
+  zh: {
+    title:"Know CO\u2082 \u8bbe\u7f6e",save:"\u4fdd\u5b58\u8bbe\u7f6e",
+    sec_display:"\u663e\u793a\u4e0e\u9608\u503c",sec_wifi:"Wi-Fi",
+    sec_cloud:"\u4e91\u4e0a\u4f20",sec_mqtt:"MQTT\u4e2d\u7ee7\u5668",
+    sec_aio:"Adafruit IO",sec_dim:"\u5c4f\u5e55\u8c03\u5149",
+    sec_device:"\u8bbe\u5907",sec_calib:"\u6821\u51c6",
+    lbl_low:"\u4f4e\u9608\u503c (ppm)",lbl_med:"\u4e2d\u9608\u503c (ppm)",
+    lbl_alert:"\u8b66\u62a5\u9608\u503c (ppm)",lbl_temp:"\u6e29\u5ea6\u5355\u4f4d",
+    lbl_alerts:"\u542f\u7528\u8b66\u62a5",lbl_scale:"\u56fe\u8868\u5c3a\u5ea6",
+    lbl_ap_ssid:"AP\u7f51\u7edc\u540d\u79f0",lbl_ap_pass:"AP\u5bc6\u7801",
+    lbl_sta_ssid:"\u5bb6\u5ead Wi-Fi SSID",lbl_sta_pass:"Wi-Fi\u5bc6\u7801",
+    lbl_cloud_url:"API \u5730\u5740",lbl_cloud_token:"\u8bbe\u5907\u4ee4\u724c",
+    lbl_cloud_interval:"\u4e0a\u4f20\u95f4\u9694\uff08\u79d2\uff09",lbl_cloud_en:"\u542f\u7528\u4e91\u4e0a\u4f20",
+    lbl_mqtt_en:"\u542f\u7528 MQTT \u53d1\u5e03",lbl_mqtt_broker:"\u4e2d\u7ee7\u5668\u4e3b\u673a/IP",
+    lbl_aio_en:"\u542f\u7528 Adafruit IO",lbl_aio_user:"AIO \u7528\u6237\u540d",
+    lbl_dim_en:"\u542f\u7528\u5b9a\u65f6\u8c03\u5149\uff08\u9700\u8981 NTP\uff09",
+    lbl_dim_start:"\u5f00\u59cb\u65f6\u95f4 (0-23)",lbl_dim_end:"\u7ed3\u675f\u65f6\u95f4 (0-23)",
+    lbl_dim_bright:"\u8c03\u5149\u671f\u95f4\u4eae\u5ea6 (0-100%)",
+    lbl_lang:"\u754c\u9762\u8bed\u8a00",lbl_admin_pw:"\u8bbe\u7f6e\u5bc6\u7801",
+    lbl_device_id:"\u8bbe\u5907 ID",btn_ota:"OTA \u56fa\u4ef6\u66f4\u65b0",
+    note_dim:"\u793a\u4f8b\uff1a\u5f00\u59cb=22, \u7ed3\u675f=7 \u5c06\u4ece22\u70b9\u8c03\u5149\u521307\u70b9\u3002",
+    note_https:"\u6ce8\u610f\uff1a\u672c\u5730\u670d\u52a1\u5668\u4f7f\u7528 HTTP\u3002\u6d41\u91cf\u4ec5\u5728\u5c40\u57df\u7f51\u5185\u3002",
+    help_low:"CO\u2082\u6c34\u5e73\u4f4e\u4e8e\u6b64\u503c\u65f6\u663e\u793a\u7eff\u8272\u3002",
+    help_med:"CO\u2082\u6c34\u5e73\u4f4e\u4e8e\u6b64\u503c\u65f6\u663e\u793a\u9ec4\u8272\u3002",
+    help_alert:"CO\u2082\u6c34\u5e73\u8fbe\u5230\u6216\u8d85\u8fc7\u6b64\u503c\u65f6\u89e6\u53d1\u8b66\u62a5\u3002",
+    help_device_id:"\u968f\u4e91\u548c MQTT \u6570\u636e\u4e00\u8d77\u53d1\u9001\u7684\u6807\u8bc6\u7b26\u3002",
+    help_admin_pw:"\u7559\u7a7a\u53ef\u7981\u7528\u5bc6\u7801\u4fdd\u62a4\u3002",
+    help_sta:"\u8f93\u5165 Wi-Fi \u51ed\u636e\u4ee5\u8fde\u63a5\u8bbe\u5907\u3002",
+    help_cloud:"\u5c06 CO\u2082 \u8bfb\u6570\u53d1\u9001\u5230 Know CO\u2082 \u4e91\u5e73\u53f0\u3002",
+    help_mqtt:"\u5c06\u8bfb\u6570\u53d1\u5e03\u5230\u672c\u5730 MQTT \u4e2d\u7ee7\u5668\uff08\u5982 Home Assistant\uff09\u3002",
+    help_aio:"\u5c06\u8bfb\u6570\u53d1\u5e03\u5230 Adafruit IO \u9879\u76ee\u3002",
+    help_dim:"\u5728\u8bbe\u5b9a\u65f6\u95f4\u81ea\u52a8\u964d\u4f4e\u4eae\u5ea6\u3002\u9700\u8981 NTP\u3002",
+    help_ota:"\u4e0b\u8f7d\u5e76\u5b89\u88c5\u65b0\u56fa\u4ef6\u3002\u8bbe\u5907\u5c06\u91cd\u542f\u3002",
+    lbl_regen:"\u91cd\u65b0\u751f\u6210 AP \u51ed\u636e",lbl_sta_connect:"\u4e0b\u6b21\u91cd\u542f\u65f6\u8fde\u63a5",
+    lbl_mode_text:"\u6587\u5b57",lbl_mode_big:"\u5927\u5b57 CO\u2082",lbl_mode_graph:"\u56fe\u8868",
+    lbl_scale_fixed:"400\u20132000 ppm\uff08\u7d27\u51d1\uff09",lbl_scale_wide:"400\u20133000 ppm\uff08\u5bbd\u677e\uff09",lbl_scale_auto:"\u81ea\u52a8",
+    lbl_max_pts:"\u5386\u53f2\u7f13\u51b2\u533a\uff08\u6837\u672c\uff09",lbl_cloud_secret:"\u8bbe\u5907\u5bc6\u94a5/\u4ee4\u724c",
+    lbl_mqtt_port:"\u7aef\u53e3",lbl_mqtt_user:"\u7528\u6237\u540d\uff08\u53ef\u9009\uff09",lbl_mqtt_pass:"\u5bc6\u7801\uff08\u53ef\u9009\uff09",
+    lbl_mqtt_prefix:"\u4e3b\u9898\u524d\u7f00",lbl_mqtt_interval:"\u53d1\u5e03\u95f4\u9694\uff08\u79d2\uff09",
+    lbl_aio_group:"\u9879\u76ee\u7ec4\u5bc6\u94a5",lbl_aio_interval:"\u53d1\u5e03\u95f4\u9694\uff08\u79d2\uff09",
+    nav_calib:"\u6821\u51c6",nav_back:"\u8fd4\u56de\u8bbe\u7f6e",nav_ota:"\u56fa\u4ef6\u66f4\u65b0",
+    ph_device_id:"co2-node-1",ph_sta_ssid:"Wi-Fi \u7f51\u7edc\u540d\u79f0",ph_sta_pass:"Wi-Fi \u5bc6\u7801",
+    ph_cloud_url:"https://api.knowco2.com/v1/ingest",ph_cloud_token:"\u5c06\u4ee4\u724c\u7c98\u8d34\u5230\u8fd9\u91cc",
+    ph_mqtt_broker:"192.168.1.x \u6216 mqtt.\u793a\u4f8b.com",ph_mqtt_prefix:"knowco2",
+    ph_aio_user:"adafruit\u7528\u6237\u540d",ph_aio_group:"knowco2",
+    ph_fw_url:"http://192.168.1.x/firmware.py",
+    aria_alerts_check:"\u5207\u6362 CO\u2082 \u8b66\u62a5\u901a\u77e5",
+    aria_cloud_check:"\u5207\u6362\u4e91\u6570\u636e\u4e0a\u4f20",
+    aria_mqtt_check:"\u5207\u6362 MQTT \u53d1\u5e03",
+    aria_aio_check:"\u5207\u6362 Adafruit IO \u53d1\u5e03",
+    aria_dim_check:"\u5207\u6362\u5b9a\u65f6\u8c03\u5149",
+    skip_nav:"\u8df3\u81f3\u4e3b\u8981\u5185\u5bb9"
+  },
+  ko: {
+    title:"Know CO\u2082 \uc124\uc815",save:"\uc124\uc815 \uc800\uc7a5",
+    sec_display:"\ub514\uc2a4\ud50c\ub808\uc774 \ubc0f \uc784\uacc4\uac12",sec_wifi:"Wi-Fi",
+    sec_cloud:"\ud074\ub77c\uc6b0\ub4dc \uc5c5\ub85c\ub4dc",sec_mqtt:"MQTT \ube0c\ub85c\ucee4",
+    sec_aio:"Adafruit IO",sec_dim:"\ud654\uba74 \ubc1d\uae30 \uc608\uc57d",
+    sec_device:"\uc7a5\uce58",sec_calib:"\ubcf4\uc815",
+    lbl_low:"\ub099\uc740 \uc784\uacc4\uac12 (ppm)",lbl_med:"\uc911\uac04 \uc784\uacc4\uac12 (ppm)",
+    lbl_alert:"\uacbd\ubcf4 \uc784\uacc4\uac12 (ppm)",lbl_temp:"\uc628\ub3c4 \ub2e8\uc704",
+    lbl_alerts:"\uacbd\ubcf4 \ud65c\uc131\ud654",lbl_scale:"\uadf8\ub798\ud504 \ucca0\ub3c4",
+    lbl_ap_ssid:"AP \ub124\ud2b8\uc6cc\ud06c \uc774\ub984",lbl_ap_pass:"AP \ube44\ubc00\ubc88\ud638",
+    lbl_sta_ssid:"\ud648 Wi-Fi SSID",lbl_sta_pass:"Wi-Fi \ube44\ubc00\ubc88\ud638",
+    lbl_cloud_url:"API URL",lbl_cloud_token:"\uc7a5\uce58 \ud1a0\ud070",
+    lbl_cloud_interval:"\uc5c5\ub85c\ub4dc \uac04\uaca9 (\ucd08)",lbl_cloud_en:"\ud074\ub77c\uc6b0\ub4dc \uc5c5\ub85c\ub4dc \ud65c\uc131\ud654",
+    lbl_mqtt_en:"MQTT \uac8c\uc2dc \ud65c\uc131\ud654",lbl_mqtt_broker:"\ube0c\ub85c\ucee4 \ud638\uc2a4\ud2b8/IP",
+    lbl_aio_en:"Adafruit IO \ud65c\uc131\ud654",lbl_aio_user:"AIO \uc0ac\uc6a9\uc790\uba85",
+    lbl_dim_en:"\uc608\uc57d \ubc1d\uae30 \uc870\uc808 \ud65c\uc131\ud654 (NTP \ud544\uc694)",
+    lbl_dim_start:"\uc2dc\uc791 \uc2dc\uac04 (0-23)",lbl_dim_end:"\uc885\ub8cc \uc2dc\uac04 (0-23)",
+    lbl_dim_bright:"\uc5b4\ub450\uc6b4 \uc2dc\uac04 \ubc1d\uae30 (0-100%)",
+    lbl_lang:"\uc778\ud130\ud398\uc774\uc2a4 \uc5b8\uc5b4",lbl_admin_pw:"\uc124\uc815 \ube44\ubc00\ubc88\ud638",
+    lbl_device_id:"\uc7a5\uce58 ID",btn_ota:"OTA \ud3fc\uc6e8\uc5b4 \uc5c5\ub370\uc774\ud2b8",
+    note_dim:"\uc608: \uc2dc\uc791=22, \uc885\ub8cc=7\uc740 \uc624\ud6c4 10\uc2dc\ubd80\ud130 \uc624\uc804 7\uc2dc\uae4c\uc9c0 \uc870\uc808.",
+    note_https:"\ucc38\uace0: \ub85c\ucec8 \uc11c\ubc84\ub294 HTTP\ub97c \uc0ac\uc6a9\ud569\ub2c8\ub2e4. \ud2b8\ub798\ud53d\uc740 LAN \ub0b4\uc5d0\ub9e8 \uc788\uc2b5\ub2c8\ub2e4.",
+    help_low:"CO\u2082 \uc218\uc900\uc774 \uc774 \uac12 \uc774\ud558\uc774\uba74 \ub179\uc0c9\uc73c\ub85c \ud45c\uc2dc\ub429\ub2c8\ub2e4.",
+    help_med:"CO\u2082 \uc218\uc900\uc774 \uc774 \uac12 \uc774\ud558\uc774\uba74 \ub178\ub780\uc0c9\uc73c\ub85c \ud45c\uc2dc\ub429\ub2c8\ub2e4.",
+    help_alert:"\uc774 \uac12 \uc774\uc0c1\uc758 CO\u2082 \uc218\uc900\uc5d0\uc11c \uacbd\ubcf4\uac00 \ud65c\uc131\ud654\ub429\ub2c8\ub2e4.",
+    help_device_id:"\ud074\ub77c\uc6b0\ub4dc \ubc0f MQTT \ub370\uc774\ud130\uc640 \ud568\uaed8 \uc804\uc1a1\ub418\ub294 \uc2dd\ubcc4\uc790.",
+    help_admin_pw:"\ube44\ubc00\ubc88\ud638 \ubcf4\ud638\ub97c \ube44\ud65c\uc131\ud654\ud558\ub824\uba74 \ube44\uc6cc\ub450\uc138\uc694.",
+    help_sta:"Wi-Fi \uc790\uaca9 \uc99d\uba85\uc744 \uc785\ub825\ud558\uc5ec \uc7a5\uce58\ub97c \uc5f0\uacb0\ud558\uc138\uc694.",
+    help_cloud:"CO\u2082 \uce21\uc815\uac12\uc744 Know CO\u2082 \ud074\ub77c\uc6b0\ub4dc\ub85c \uc804\uc1a1\ud569\ub2c8\ub2e4.",
+    help_mqtt:"\ub85c\uce7c MQTT \ube0c\ub85c\ucee4\uc5d0 \uce21\uc815\uac12\uc744 \uac8c\uc2dc\ud569\ub2c8\ub2e4.",
+    help_aio:"Adafruit IO \ud53c\ub4dc\uc5d0 \uce21\uc815\uac12\uc744 \uac8c\uc2dc\ud569\ub2c8\ub2e4.",
+    help_dim:"\uc124\uc815\ub41c \uc2dc\uac04\ub300\uc5d0 \uc790\ub3d9\uc73c\ub85c \ud654\uba74 \ubc1d\uae30\ub97c \uc904\uc785\ub2c8\ub2e4. NTP \ud544\uc694.",
+    help_ota:"\uc0c8 \ud3fc\uc6e8\uc5b4\ub97c \ub2e4\uc6b4\ub85c\ub4dc\ud558\uace0 \uc124\uce58\ud569\ub2c8\ub2e4. \uc7a5\uce58\uac00 \uc7ac\ubd80\ud305\ub429\ub2c8\ub2e4.",
+    lbl_regen:"AP \uc790\uaca9 \uc99d\uba85 \uc7ac\uc0dd\uc131",lbl_sta_connect:"\ub2e4\uc74c \uc7ac\ubd80\ud305 \uc2dc \uc5f0\uacb0",
+    lbl_mode_text:"\ud14d\uc2a4\ud2b8",lbl_mode_big:"\ub300\ud615 CO\u2082",lbl_mode_graph:"\uadf8\ub798\ud504",
+    lbl_scale_fixed:"400\u20132000 ppm (\uc9e7\uc740)",lbl_scale_wide:"400\u20133000 ppm (\ub113\uc740)",lbl_scale_auto:"\uc790\ub3d9",
+    lbl_max_pts:"\ud788\uc2a4\ud1a0\ub9ac \ubc84\ud37c (\uc0d8\ud50c)",lbl_cloud_secret:"\uc7a5\uce58 \ube44\ubc00/\ud1a0\ud070",
+    lbl_mqtt_port:"\ud3ec\ud2b8",lbl_mqtt_user:"\uc0ac\uc6a9\uc790 (\uc120\ud0dd)",lbl_mqtt_pass:"\ube44\ubc00\ubc88\ud638 (\uc120\ud0dd)",
+    lbl_mqtt_prefix:"\ud1a0\ud53d \uc811\ub450\uc0ac",lbl_mqtt_interval:"\uac8c\uc2dc \uac04\uaca9 (\ucd08)",
+    lbl_aio_group:"\ud53c\ub4dc \uadf8\ub8f9 \ud0a4",lbl_aio_interval:"\uac8c\uc2dc \uac04\uaca9 (\ucd08)",
+    nav_calib:"\ubcf4\uc815",nav_back:"\uc124\uc815\uc73c\ub85c \ub3cc\uc544\uac00\uae30",nav_ota:"\ud3fc\uc6e8\uc5b4 \uc5c5\ub370\uc774\ud2b8",
+    ph_device_id:"co2-node-1",ph_sta_ssid:"Wi-Fi \ub124\ud2b8\uc6cc\ud06c \uc774\ub984",ph_sta_pass:"Wi-Fi \ube44\ubc00\ubc88\ud638",
+    ph_cloud_url:"https://api.knowco2.com/v1/ingest",ph_cloud_token:"\ud1a0\ud070\uc744 \uc5ec\uae30\uc5d0 \ubd99\uc5ec\ub123\uc73c\uc138\uc694",
+    ph_mqtt_broker:"192.168.1.x \ub610\ub294 mqtt.\uc608\uc2dc.com",ph_mqtt_prefix:"knowco2",
+    ph_aio_user:"adafruit \uc0ac\uc6a9\uc790\uba85",ph_aio_group:"knowco2",
+    ph_fw_url:"http://192.168.1.x/firmware.py",
+    aria_alerts_check:"CO\u2082 \uacbd\ubcf4 \uc54c\ub9bc \ud1a0\uae00",
+    aria_cloud_check:"\ud074\ub77c\uc6b0\ub4dc \ub370\uc774\ud130 \uc5c5\ub85c\ub4dc \ud1a0\uae00",
+    aria_mqtt_check:"MQTT \uac8c\uc2dc \ud1a0\uae00",
+    aria_aio_check:"Adafruit IO \uac8c\uc2dc \ud1a0\uae00",
+    aria_dim_check:"\uc608\uc57d \ubc1d\uae30 \uc870\uc808 \ud1a0\uae00",
+    skip_nav:"\ubcf8\ubb38\uc73c\ub85c \uac74\ub108\ubf00\uae30"
+  }
+};
+function applyLang(lang){
+  var t = T[lang] || T['en'];
+  // Update the document language for screen readers
+  document.documentElement.lang = lang;
+  // Update the page <title>
+  if (t.title) document.title = t.title;
+  // Update text nodes
+  document.querySelectorAll('[data-i18n]').forEach(function(el){
+    var k = el.getAttribute('data-i18n');
+    if (!t[k]) return;
+    if (el.children.length === 0) {
+      el.textContent = t[k];
+    } else {
+      for (var i = 0; i < el.childNodes.length; i++) {
+        if (el.childNodes[i].nodeType === 3) {
+          el.childNodes[i].nodeValue = t[k];
+          break;
+        }
+      }
+    }
+  });
+  // Update placeholder attributes
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(function(el){
+    var k = el.getAttribute('data-i18n-placeholder');
+    if (t[k]) el.placeholder = t[k];
+  });
+  // Update aria-label attributes
+  document.querySelectorAll('[data-i18n-aria]').forEach(function(el){
+    var k = el.getAttribute('data-i18n-aria');
+    if (t[k]) el.setAttribute('aria-label', t[k]);
+  });
+  // Keep language selector in sync
+  var sel = document.querySelector('select[name=lang]');
+  if (sel) sel.value = lang;
+  localStorage.setItem('kco2_lang', lang);
+}
+(function(){
+  var saved = localStorage.getItem('kco2_lang') || '""" + current_lang + """';
+  var sel = document.querySelector('select[name=lang]');
+  if (sel) sel.addEventListener('change', function(){ applyLang(this.value); });
+  applyLang(saved);
+})();
+</script>
 </body>
 </html>"""
     return html
@@ -2514,6 +3578,46 @@ def handle_data_route(conn):
     header, body = make_json_response({"co2": ints})
     send_all(conn, header)
     send_all(conn, body)
+
+def handle_export_csv_route(conn):
+    """Return the in-RAM CO2 history as a downloadable CSV file."""
+    try:
+        import rtc as _rtc
+        now_ts = int(time.time())
+    except Exception:
+        now_ts = 0
+
+    rows = ["seconds_ago,co2_ppm,temp_c,rh_pct"]
+    pts = co2_history[-MAX_WEB_POINTS:]
+    total = len(pts)
+    for i, v in enumerate(pts):
+        # Estimate when this sample was taken, working backwards from now.
+        age_s = int((total - 1 - i) * SCD_MEASUREMENT_PERIOD)
+        co2_val = int(v) if v is not None else ""
+        # temp and rh are only available as the latest values, so omit for history
+        rows.append("%d,%s,," % (age_s, co2_val))
+    # Overwrite the last row with the most recent temp/rh if available
+    if total > 0 and last_temp_c is not None and last_rh is not None:
+        rows[-1] = "0,%s,%.1f,%.1f" % (
+            int(pts[-1]) if pts[-1] is not None else "",
+            last_temp_c,
+            last_rh
+        )
+    csv_body = "\r\n".join(rows) + "\r\n"
+    csv_bytes = csv_body.encode("utf-8")
+    header = build_response(
+        200,
+        "text/csv; charset=utf-8",
+        csv_bytes
+    )[0]
+    # Add Content-Disposition to trigger download in browser
+    header = header.replace(
+        b"\r\n\r\n",
+        b"\r\nContent-Disposition: attachment; filename=\"knowco2_export.csv\"\r\n\r\n",
+        1
+    )
+    send_all(conn, header)
+    send_all(conn, csv_bytes)
 
 def handle_status_route(conn):
     if last_temp_c is not None:
@@ -2789,6 +3893,683 @@ def handle_calibration_route(conn, params):
     send_all(conn, header)
     send_all(conn, body)
 
+# ---------------------------------------------------------------------------
+# ZIP package OTA helpers
+# ---------------------------------------------------------------------------
+
+def _zip_safe_path(name):
+    """Return a cleaned, safe destination path for a ZIP entry, or None if unsafe."""
+    name = name.replace("\\", "/")
+    while name.startswith("/"):
+        name = name[1:]
+    # Skip directory entries, empty names, or any path containing ..
+    if not name or name.endswith("/"):
+        return None
+    for part in name.split("/"):
+        if part == ".." or part == ".":
+            return None
+    # Skip macOS resource-fork directories
+    if name.startswith("__MACOSX/") or name.startswith("."):
+        return None
+    top = name.split("/")[0]
+    # Only allow these top-level items
+    if top in ("code.py", "boot.py"):
+        return name if "/" not in name else None
+    if top in ("lib", "assets"):
+        return name
+    return None
+
+
+def _zip_ensure_dir(path):
+    """Create all parent directories for path if they don't already exist."""
+    parts = path.split("/")
+    current = ""
+    for part in parts[:-1]:
+        if not part:
+            continue
+        current = (current + "/" + part) if current else part
+        try:
+            import os as _e_os
+            _e_os.mkdir(current)
+        except OSError:
+            pass  # already exists
+
+
+def _parse_zip_entries(zip_path):
+    """
+    Parse a ZIP file's Central Directory and return a list of entry dicts.
+    Each entry: {name, local_off, comp_size, uncomp_size, method}
+    Returns (entries_list, None) on success, (None, error_str) on failure.
+    Only STORED (method=0) and DEFLATE (method=8) are reported; others are skipped.
+    """
+    import struct as _s
+    try:
+        with open(zip_path, "rb") as f:
+            # Determine file size
+            f.seek(0, 2)
+            file_size = f.tell()
+            if file_size < 22:
+                return None, "File too small to be a ZIP"
+
+            # Scan backwards for the End-of-Central-Directory record (PK\x05\x06).
+            # It is within the last 65536+22 bytes of the file.
+            scan_size = min(file_size, 65558)
+            f.seek(file_size - scan_size)
+            tail = f.read(scan_size)
+            eocd_rel = tail.rfind(b"PK\x05\x06")
+            if eocd_rel < 0:
+                return None, "Not a valid ZIP (no EOCD signature)"
+            eocd = tail[eocd_rel : eocd_rel + 22]
+            if len(eocd) < 22:
+                return None, "Truncated EOCD record"
+
+            # EOCD layout: sig(I) diskNo(H) cdStartDisk(H) entriesDisk(H)
+            #              totalEntries(H) cdSize(I) cdOffset(I) commentLen(H)
+            (sig, _, _, _, total_entries, cd_size, cd_offset, _) = \
+                _s.unpack_from("<IHHHHIIH", eocd)
+            if sig != 0x06054b50:
+                return None, "Bad EOCD signature"
+            if cd_size > 65536:
+                return None, "Central Directory too large (>64 KB); ZIP64 not supported"
+
+            # Read the Central Directory
+            f.seek(cd_offset)
+            cd_data = f.read(cd_size)
+            if len(cd_data) < cd_size:
+                return None, "Truncated central directory"
+
+        # Parse Central Directory entries (all from cd_data in RAM)
+        # CD entry fixed part (46 bytes):
+        # sig(I) verMade(H) verNeeded(H) flags(H) method(H) modTime(H) modDate(H)
+        # crc32(I) compSize(I) uncompSize(I) nameLen(H) extraLen(H) commentLen(H)
+        # diskStart(H) intAttr(H) extAttr(I) localOff(I)
+        CD_FMT = "<IHHHHHHIIIHHHHHII"
+        CD_SZ  = 46
+        entries = []
+        pos = 0
+        for _ in range(total_entries):
+            if pos + CD_SZ > len(cd_data):
+                break
+            fields = _s.unpack_from(CD_FMT, cd_data, pos)
+            (sig, _, _, _, method, _, _, _, comp_size, uncomp_size,
+             name_len, extra_len, comment_len, _, _, _, local_off) = fields
+            if sig != 0x02014b50:
+                break
+            raw_name = cd_data[pos + CD_SZ : pos + CD_SZ + name_len]
+            try:
+                name = raw_name.decode("utf-8")
+            except Exception:
+                name = raw_name.decode("latin-1")
+            pos += CD_SZ + name_len + extra_len + comment_len
+            # Skip directories and unsupported compression
+            if name.endswith("/"):
+                continue
+            if method not in (0, 8):
+                continue
+            entries.append({
+                "name": name,
+                "local_off": local_off,
+                "comp_size": comp_size,
+                "uncomp_size": uncomp_size,
+                "method": method,
+            })
+        return entries, None
+    except Exception as e:
+        return None, "ZIP parse error: " + str(e)
+
+
+def _extract_zip_entry_to_file(zip_path, entry, dest_path):
+    """
+    Extract one entry from the ZIP at zip_path to dest_path.
+    Supports STORED (method=0) and DEFLATE (method=8).
+    Returns (ok: bool, message: str).
+    """
+    import struct as _s
+    import gc as _gc
+    method   = entry["method"]
+    local_off  = entry["local_off"]
+    comp_size  = entry["comp_size"]
+    uncomp_size = entry["uncomp_size"]
+
+    # Local file header layout (30 bytes fixed):
+    # sig(I) verNeeded(H) flags(H) method(H) modTime(H) modDate(H)
+    # crc32(I) compSize(I) uncompSize(I) nameLen(H) extraLen(H)
+    LFH_FMT = "<IHHHHHIIIHH"
+    LFH_SZ  = 30
+
+    try:
+        with open(zip_path, "rb") as zf:
+            zf.seek(local_off)
+            lhdr = zf.read(LFH_SZ)
+            if len(lhdr) < LFH_SZ:
+                return False, "Truncated local file header"
+            (sig, _, _, _, _, _, _, _, _, _, name_len, extra_len) = \
+                _s.unpack_from(LFH_FMT, lhdr)
+            if sig != 0x04034b50:
+                return False, "Bad local file header signature"
+            # Seek past variable-length name and extra fields to reach data
+            data_start = local_off + LFH_SZ + name_len + extra_len
+            zf.seek(data_start)
+
+            _zip_ensure_dir(dest_path)
+
+            if method == 0:  # STORED — stream directly chunk by chunk
+                written = 0
+                with open(dest_path, "wb") as df:
+                    while written < uncomp_size:
+                        chunk = zf.read(min(512, uncomp_size - written))
+                        if not chunk:
+                            return False, "Premature end of STORED data at byte %d" % written
+                        df.write(chunk)
+                        written += len(chunk)
+                        try:
+                            if _wd is not None:
+                                _wd.feed()
+                        except Exception:
+                            pass
+
+            elif method == 8:  # DEFLATE — read compressed blob, decompress in RAM
+                import zlib as _zlib
+                _gc.collect()
+                compressed = zf.read(comp_size)
+                if len(compressed) < comp_size:
+                    return False, "Premature end of DEFLATE data"
+                try:
+                    decompressed = _zlib.decompress(compressed, -15)
+                except Exception as ze:
+                    return False, "Decompression failed: " + str(ze)
+                del compressed
+                _gc.collect()
+                with open(dest_path, "wb") as df:
+                    df.write(decompressed)
+                del decompressed
+                _gc.collect()
+
+        return True, "OK"
+    except Exception as e:
+        return False, "Extract error: " + str(e)
+
+
+def _process_zip_update(conn, zip_path):
+    """
+    Install a ZIP update package.  Called after the ZIP has been fully written
+    to zip_path on disk.  Extracts allowed paths, validates code.py, does an
+    atomic rename for code.py, then reboots.
+    """
+    import os as _oz
+    import gc as _gcz
+
+    log("ota", "Parsing ZIP package...")
+    entries, err = _parse_zip_entries(zip_path)
+    if entries is None:
+        try: _oz.remove(zip_path)
+        except Exception: pass
+        _send_ota_result(conn, False, "ZIP parse failed: " + (err or "unknown"))
+        return
+
+    if not entries:
+        try: _oz.remove(zip_path)
+        except Exception: pass
+        _send_ota_result(conn, False, "ZIP is empty — no files found.")
+        return
+
+    # Validate paths; separate code.py from everything else
+    safe  = []   # [(dest_path, entry), ...]
+    skipped = []
+    for e in entries:
+        dest = _zip_safe_path(e["name"])
+        if dest:
+            safe.append((dest, e))
+        else:
+            skipped.append(e["name"])
+
+    if not safe:
+        try: _oz.remove(zip_path)
+        except Exception: pass
+        _send_ota_result(conn, False,
+            "ZIP contains no installable files. "
+            "Allowed top-level names: code.py, boot.py, lib/, assets/. "
+            "Found: " + ", ".join(e["name"] for e in entries[:8]))
+        return
+
+    # Extend watchdog for the duration of all extractions
+    try:
+        if _wd is not None:
+            _wd.timeout = 90
+    except Exception:
+        pass
+
+    # If code.py is in the package, extract it to a temp path and validate
+    # before touching anything else on disk.
+    code_tmp = "/code.py.ota"
+    has_code = any(dest == "code.py" for dest, _ in safe)
+    if has_code:
+        code_entry = next(e for d, e in safe if d == "code.py")
+        ok, msg = _extract_zip_entry_to_file(zip_path, code_entry, code_tmp)
+        if not ok:
+            try: _oz.remove(zip_path)
+            except Exception: pass
+            try: _oz.remove(code_tmp)
+            except Exception: pass
+            _send_ota_result(conn, False, "Failed to extract code.py: " + msg)
+            return
+        # Sanity-check: must look like Python source
+        try:
+            with open(code_tmp, "rb") as _f:
+                _head = _f.read(64).lstrip(b"\xef\xbb\xbf")
+            _valid = (_head.startswith(b"#") or _head.startswith(b"import ") or
+                      _head.startswith(b"from ")  or _head.startswith(b"\n#") or
+                      _head.startswith(b"\r\n#"))
+            if not _valid:
+                try: _oz.remove(zip_path)
+                except Exception: pass
+                try: _oz.remove(code_tmp)
+                except Exception: pass
+                _send_ota_result(conn, False,
+                    "code.py in ZIP does not look like Python source "
+                    "(first bytes: %r). Aborting — nothing was changed." % _head[:16])
+                return
+        except Exception as ce:
+            _send_ota_result(conn, False, "Cannot verify code.py: " + str(ce))
+            return
+
+    # Extract everything except code.py (already done to tmp)
+    installed = []
+    errors    = []
+    for dest, e in safe:
+        if dest == "code.py":
+            continue  # handled separately
+        ok, msg = _extract_zip_entry_to_file(zip_path, e, dest)
+        if ok:
+            installed.append(dest)
+        else:
+            errors.append("%s: %s" % (dest, msg))
+        _gcz.collect()
+
+    # Atomic rename of code.py into place (last, so other files are already on disk)
+    if has_code:
+        try:
+            try: _oz.remove("/code.py.bak")
+            except Exception: pass
+            try: _oz.rename("/code.py", "/code.py.bak")
+            except Exception: pass
+            _oz.rename(code_tmp, "/code.py")
+            installed.append("code.py")
+        except Exception as re_err:
+            _send_ota_result(conn, False, "Failed to install code.py: " + str(re_err))
+            return
+
+    # Remove the ZIP from disk
+    try: _oz.remove(zip_path)
+    except Exception: pass
+
+    # Build summary
+    summary = "Installed (%d files): %s." % (len(installed), ", ".join(installed))
+    if errors:
+        summary += " Warnings: " + "; ".join(errors) + "."
+    if skipped:
+        summary += " Skipped (outside allowed paths): " + ", ".join(skipped[:4]) + "."
+
+    _send_ota_result(conn, True, summary + " Rebooting in 3 seconds.")
+    time.sleep(3)
+    try:
+        if microcontroller is not None:
+            microcontroller.reset()
+    except Exception:
+        pass
+    try:
+        import supervisor as _sup
+        _sup.reload()
+    except Exception:
+        pass
+
+
+def handle_update_route(conn, params, method=b"GET", raw_headers=b""):
+    """OTA firmware update page.
+    GET  - shows the update form (URL download + file upload).
+    POST with firmware_url param - downloads from URL and installs.
+    POST with ?upload=1 query param and raw binary body - streams file directly to disk.
+    """
+    global settings
+
+    # Require admin password if set (checked for GET and POST form submissions;
+    # file uploads pass pw as a query param since the body is raw binary).
+    admin_pw = settings.get("admin_password", "")
+    if admin_pw:
+        provided_pw = params.get("pw", "")
+        if provided_pw != admin_pw:
+            login_html = """<!DOCTYPE html>
+<html><head><meta charset='utf-8'><title>OTA Update - Login</title>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<style>body{font-family:sans-serif;background:#0b0b0b;color:#eee;margin:0}
+.wrap{max-width:480px;margin:0 auto;padding:16px;text-align:center}
+input{padding:6px;border-radius:4px;border:1px solid #444;background:#111;color:#eee;font-size:14px;width:80%;max-width:260px}
+button{margin-top:16px;padding:8px 16px;border-radius:4px;border:1px solid #00bcd4;background:#00bcd4;color:#000;font-weight:600;cursor:pointer}
+</style></head><body><div class='wrap'>
+<h1>Know CO&#8322; OTA</h1><p>Enter settings password:</p>
+<form method='POST' action='/update'>
+<label>Password<br><input type='password' name='pw'></label><br>
+<button type='submit'>Unlock</button></form></div></body></html>"""
+            header, body = make_html_response(login_html)
+            send_all(conn, header)
+            send_all(conn, body)
+            return
+
+    # --- FILE UPLOAD: POST with ?upload=1, raw binary body ---
+    if method == b"POST" and params.get("upload") == "1":
+        # Snapshot settings to backup file before any OTA write so they can be
+        # restored automatically on next boot if the filesystem gets corrupted.
+        try:
+            with open(SETTINGS_FILE, "rb") as _sf:
+                _sdata = _sf.read()
+            with open(SETTINGS_FILE + ".bak", "wb") as _bf:
+                _bf.write(_sdata)
+        except Exception:
+            pass
+        tmp_path = "/update.tmp"
+        ok, msg = _stream_request_body_to_file(conn, raw_headers, tmp_path)
+        if not ok:
+            _send_ota_result(conn, False, "Upload failed: " + msg)
+            try:
+                import os as _os2
+                _os2.remove(tmp_path)
+            except Exception:
+                pass
+            return
+
+        # Detect file type by magic bytes.
+        # PK\x03\x04 (0x504B0304) → ZIP package   anything else → Python source
+        try:
+            with open(tmp_path, "rb") as _f:
+                _magic = _f.read(4)
+        except Exception as _me:
+            _send_ota_result(conn, False, "Cannot read uploaded file: " + str(_me))
+            return
+
+        if _magic == b"PK\x03\x04":
+            # --- ZIP package update ---
+            import os as _oz_mv
+            zip_path = "/update.zip"
+            try:
+                _oz_mv.rename(tmp_path, zip_path)
+            except Exception:
+                zip_path = tmp_path  # use in-place if rename fails
+            _process_zip_update(conn, zip_path)
+            return
+
+        # --- Single Python file update (original code.py-only path) ---
+        _head_str = _magic + b""  # first 4 bytes already read
+        try:
+            with open(tmp_path, "rb") as _f:
+                _head_str = (_magic + _f.read(60)).lstrip(b"\xef\xbb\xbf")
+        except Exception:
+            pass
+        _valid = (
+            _head_str.startswith(b"#") or
+            _head_str.startswith(b"import ") or
+            _head_str.startswith(b"from ") or
+            _head_str.startswith(b"\n#") or
+            _head_str.startswith(b"\r\n#")
+        )
+        if not _valid:
+            import os as _os2
+            _os2.remove(tmp_path)
+            _send_ota_result(conn, False,
+                "Upload rejected: file is not a ZIP package and does not look like "
+                "Python source (first bytes: %r). Aborting — nothing changed." % _head_str[:16])
+            return
+        # Rename temp → code.py atomically
+        try:
+            import os as _os
+            try: _os.remove("/code.py.bak")
+            except Exception: pass
+            try: _os.rename("/code.py", "/code.py.bak")
+            except Exception: pass
+            _os.rename(tmp_path, "/code.py")
+        except Exception as e:
+            _send_ota_result(conn, False, "File rename failed: " + str(e))
+            return
+        _send_ota_result(conn, True, "Firmware uploaded and written to /code.py. Rebooting in 3 seconds.")
+        time.sleep(3)
+        try:
+            if microcontroller is not None:
+                microcontroller.reset()
+        except Exception:
+            pass
+        try:
+            import supervisor as _sup
+            _sup.reload()
+        except Exception:
+            pass
+        return
+
+    # --- URL DOWNLOAD: POST with firmware_url in body ---
+    if method == b"POST" and "firmware_url" in params:
+        fw_url = params.get("firmware_url", "").strip()
+        if not fw_url:
+            _send_ota_result(conn, False, "No URL provided.")
+            return
+        if wifi_mode != WIFI_MODE_STA or wifi is None or not wifi.radio.connected:
+            _send_ota_result(conn, False, "Must be in STA (WiFi) mode to download firmware.")
+            return
+        # Snapshot settings before any write so they survive a failed OTA.
+        try:
+            with open(SETTINGS_FILE, "rb") as _sf:
+                _sdata = _sf.read()
+            with open(SETTINGS_FILE + ".bak", "wb") as _bf:
+                _bf.write(_sdata)
+        except Exception:
+            pass
+        try:
+            import ssl as _ssl
+            import adafruit_requests as _requests
+            pool = socketpool.SocketPool(wifi.radio)
+            if fw_url.startswith("https"):
+                _ssl_ctx = _ssl.create_default_context()
+                session = _requests.Session(pool, _ssl_ctx)
+            else:
+                session = _requests.Session(pool)
+            response = session.get(fw_url, timeout=30)
+            if response.status_code != 200:
+                _send_ota_result(conn, False, "HTTP %d fetching firmware." % response.status_code)
+                return
+            tmp_path = "/code.py.ota"
+            # Extend watchdog timeout before writing — same reason as file upload.
+            try:
+                if _wd is not None:
+                    _wd.timeout = 90
+            except Exception:
+                pass
+            # Stream response to disk to avoid RAM overflow on large files.
+            with open(tmp_path, "wb") as f:
+                try:
+                    # iter_content available in adafruit_requests >= 4.x
+                    for chunk in response.iter_content(chunk_size=512):
+                        if chunk:
+                            f.write(chunk)
+                            try:
+                                if _wd is not None:
+                                    _wd.feed()
+                            except Exception:
+                                pass
+                except AttributeError:
+                    # Fallback: load into RAM (smaller firmwares only)
+                    f.write(response.content)
+            response.close()
+            # Sanity-check the downloaded file before installing it.
+            try:
+                with open(tmp_path, "rb") as _f:
+                    _head = _f.read(64)
+                _head_str = _head.lstrip(b"\xef\xbb\xbf")
+                _valid = (
+                    _head_str.startswith(b"#") or
+                    _head_str.startswith(b"import ") or
+                    _head_str.startswith(b"from ") or
+                    _head_str.startswith(b"\n#") or
+                    _head_str.startswith(b"\r\n#")
+                )
+                if not _valid:
+                    import os as _os2
+                    _os2.remove(tmp_path)
+                    _send_ota_result(conn, False,
+                        "Download rejected: file does not appear to be valid Python "
+                        "(first bytes: %r). Existing firmware unchanged." % _head[:16])
+                    return
+            except Exception as check_err:
+                _send_ota_result(conn, False, "Could not verify downloaded file: " + str(check_err))
+                return
+            try:
+                import os as _os
+                try: _os.remove("/code.py.bak")
+                except Exception: pass
+                try: _os.rename("/code.py", "/code.py.bak")
+                except Exception: pass
+                _os.rename(tmp_path, "/code.py")
+            except Exception as rename_err:
+                _send_ota_result(conn, False, "File rename failed: " + str(rename_err))
+                return
+            _send_ota_result(conn, True, "Firmware downloaded and written to /code.py. Rebooting in 3 seconds.")
+            time.sleep(3)
+            try:
+                if microcontroller is not None:
+                    microcontroller.reset()
+            except Exception:
+                pass
+            try:
+                import supervisor as _sup
+                _sup.reload()
+            except Exception:
+                pass
+        except Exception as ota_err:
+            _send_ota_result(conn, False, "OTA error: " + str(ota_err))
+        return
+
+    # --- GET: show the combined update form ---
+    pw_val = params.get("pw", "")
+    pw_qs = ("&pw=" + pw_val) if pw_val else ""
+    pw_field = ("<input type='hidden' name='pw' value='%s'>" % pw_val) if pw_val else ""
+    form_html = """<!DOCTYPE html>
+<html><head><meta charset='utf-8'><title>Know CO2 - OTA Update</title>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0b0b0b;color:#eee;margin:0}
+.wrap{max-width:640px;margin:0 auto;padding:16px}
+h1{color:#00bcd4;margin-top:8px}
+h2{font-size:16px;color:#aaa;margin:20px 0 4px}
+label{display:block;margin-top:10px;font-size:14px}
+input[type=text],input[type=url]{width:100%;box-sizing:border-box;padding:8px;border-radius:4px;border:1px solid #444;background:#111;color:#eee;font-size:14px}
+.drop-zone{border:2px dashed #444;border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:border-color .2s;margin-top:8px}
+.drop-zone.dragover,.drop-zone:hover{border-color:#00bcd4}
+.drop-zone input[type=file]{display:none}
+.drop-zone p{margin:4px 0;color:#aaa;font-size:14px}
+.drop-zone .sub{font-size:12px;color:#666;margin-top:4px}
+#upload-btn,#url-btn{margin-top:12px;padding:8px 20px;border-radius:4px;border:1px solid #e53935;background:#e53935;color:#fff;font-weight:600;cursor:pointer;font-size:14px;display:inline-block}
+#upload-btn:disabled,#url-btn:disabled{opacity:.5;cursor:not-allowed}
+.warn{color:#ffb300;font-size:13px;margin-top:8px}
+.info{background:#111;border:1px solid #333;border-radius:6px;padding:12px 14px;margin-top:10px;font-size:13px;color:#bbb;line-height:1.6}
+.info code{background:#1e1e1e;padding:1px 5px;border-radius:3px;font-size:12px;color:#80cbc4}
+.info pre{background:#1e1e1e;padding:10px;border-radius:4px;overflow-x:auto;font-size:12px;color:#80cbc4;margin:6px 0 0}
+.progress{display:none;margin-top:8px;font-size:13px;color:#aaa}
+a{color:#00bcd4}
+hr{border:none;border-top:1px solid #333;margin:20px 0}
+</style></head><body><div class='wrap'>
+<h1>OTA Update</h1>
+<p class='warn'>&#9888; Settings are backed up automatically before every update and restored on reboot if needed.</p>
+
+<h2>Option 1 — Upload from your computer</h2>
+<div class='drop-zone' id='drop-zone' onclick="document.getElementById('fw-file-input').click()">
+  <p>&#128230; Drag &amp; drop a <code>.zip</code> package <em>or</em> a <code>.py</code> firmware file</p>
+  <p class='sub'>ZIP updates firmware + libraries + boot.py + assets &nbsp;|&nbsp; .py updates firmware only</p>
+  <input type='file' id='fw-file-input' accept='.py,.zip,.txt'>
+</div>
+<div class='progress' id='upload-progress'>Uploading...</div>
+<button id='upload-btn' disabled onclick='doUpload()'>Upload &amp; Install</button>
+
+<div class='info'>
+<strong>Building a full-update ZIP package</strong><br>
+Include any combination of these top-level paths:<br>
+<code>code.py</code> &nbsp; <code>boot.py</code> &nbsp; <code>lib/</code> &nbsp; <code>assets/</code><br><br>
+macOS &amp; Linux:
+<pre>zip -r knowco2-update.zip code.py boot.py lib/ assets/</pre>
+Windows (PowerShell — requires 7-Zip or similar for best results):
+<pre>7z a knowco2-update.zip code.py boot.py lib\\ assets\\</pre>
+Any file outside those four paths is safely ignored.<br>
+<strong>Your settings (Wi-Fi, thresholds, etc.) are never touched by an update.</strong>
+</div>
+
+<hr>
+<h2>Option 2 — Download from a URL (STA mode only)</h2>
+<form method='POST' action='/update'>""" + pw_field + """
+<label>Firmware or package URL<br><input type='url' name='firmware_url' placeholder='http://192.168.1.x/firmware.py'></label>
+<button id='url-btn' type='submit'>Download &amp; Install</button>
+</form>
+
+<p style='margin-top:20px'><a href='/'>&#8592; Back to Settings</a></p>
+</div>
+<script>
+var _file = null;
+var _pw = '""" + pw_val + """';
+var dz = document.getElementById('drop-zone');
+var fi = document.getElementById('fw-file-input');
+var ub = document.getElementById('upload-btn');
+var pr = document.getElementById('upload-progress');
+
+function _label(f){
+  var ext = f.name.split('.').pop().toLowerCase();
+  var type = ext === 'zip' ? 'package' : 'firmware';
+  return '\\u2713 ' + f.name + ' (' + Math.round(f.size/1024) + ' KB) \u2014 ' + type + ' update';
+}
+fi.addEventListener('change', function(){
+  if (fi.files.length) { _file = fi.files[0]; ub.disabled = false; dz.querySelector('p').textContent = _label(_file); }
+});
+dz.addEventListener('dragover', function(e){ e.preventDefault(); dz.classList.add('dragover'); });
+dz.addEventListener('dragleave', function(){ dz.classList.remove('dragover'); });
+dz.addEventListener('drop', function(e){
+  e.preventDefault(); dz.classList.remove('dragover');
+  if (e.dataTransfer.files.length){ _file = e.dataTransfer.files[0]; ub.disabled = false; dz.querySelector('p').textContent = _label(_file); }
+});
+
+function doUpload(){
+  if (!_file) return;
+  var ext = _file.name.split('.').pop().toLowerCase();
+  var kind = ext === 'zip' ? 'full update package' : 'firmware file';
+  if (!confirm('Install ' + _file.name + ' as a ' + kind + '? The device will reboot.')) return;
+  ub.disabled = true;
+  pr.style.display = 'block';
+  pr.textContent = 'Uploading ' + _file.name + '...';
+  var url = '/update?upload=1' + (_pw ? '&pw=' + encodeURIComponent(_pw) : '');
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', url, true);
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+  xhr.onload = function(){ pr.innerHTML = xhr.responseText; };
+  xhr.onerror = function(){ pr.textContent = 'Upload failed (network error)'; ub.disabled = false; };
+  xhr.upload.onprogress = function(e){
+    if (e.lengthComputable) pr.textContent = 'Uploading... ' + Math.round(e.loaded/e.total*100) + '%';
+  };
+  xhr.send(_file);
+}
+</script>
+</body></html>"""
+    header, body = make_html_response(form_html)
+    send_all(conn, header)
+    send_all(conn, body)
+
+
+def _send_ota_result(conn, success, message):
+    color = "#4caf50" if success else "#e53935"
+    icon = "&#10003;" if success else "&#10007;"
+    html = """<!DOCTYPE html><html><head><meta charset='utf-8'><title>OTA Result</title>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<style>body{font-family:sans-serif;background:#0b0b0b;color:#eee;text-align:center;padding:32px}
+h2{color:%s}</style></head><body>
+<h2>%s %s</h2><p>%s</p>
+<a href='/' style='color:#00bcd4'>Back to Settings</a>
+</body></html>""" % (color, icon, "Success" if success else "Error", message)
+    header, body = make_html_response(html)
+    send_all(conn, header)
+    send_all(conn, body)
+
+
 def handle_root_route(conn, params):
     # If an admin password is configured, require that the caller supply a matching
     # "pw" query parameter.  If no valid password is supplied, present a simple
@@ -2827,7 +4608,7 @@ def handle_root_route(conn, params):
   <div class='wrap'>
     <h1>Know CO₂</h1>
     <p>Please enter the settings password to continue.</p>
-    <form method='GET' action='/'>
+    <form method='POST' action='/'>
       <label>Password<br><input type='password' name='pw' autocomplete='off'></label>
       <button type='submit'>Unlock</button>
     </form>
@@ -3001,7 +4782,7 @@ def handle_http_client():
             send_all(conn, header)
             return
 
-        if method not in (b"GET", b"HEAD"):
+        if method not in (b"GET", b"HEAD", b"POST"):
             header, body = build_response(405, "text/plain; charset=utf-8", b"Method Not Allowed")
             send_all(conn, header)
             send_all(conn, body)
@@ -3009,13 +4790,33 @@ def handle_http_client():
 
         route, params = parse_query(path)
 
+        # For POST requests, read the body and merge into params (body params override query params).
+        if method == b"POST":
+            post_body = _read_request_body(conn, data)
+            if post_body:
+                try:
+                    post_body_str = post_body.decode("utf-8", "ignore")
+                    for pair in post_body_str.split("&"):
+                        if not pair:
+                            continue
+                        if "=" in pair:
+                            k, v = pair.split("=", 1)
+                        else:
+                            k, v = pair, ""
+                        params[url_decode(k)] = url_decode(v)
+                except Exception:
+                    pass
+
         if route == "/data":
             handle_data_route(conn)
         elif route == "/status":
             handle_status_route(conn)
+        elif route == "/export.csv":
+            handle_export_csv_route(conn)
         elif route == "/calibration":
-            # Serve the calibration page and allow updating calibration settings.
             handle_calibration_route(conn, params)
+        elif route == "/update":
+            handle_update_route(conn, params, method=method, raw_headers=data)
         else:
             # Default to the settings page for all other routes (including "/").
             handle_root_route(conn, params)
@@ -3403,6 +5204,102 @@ def cloud_send(payload_dict):
         except Exception:
             pass
 
+# ======================================================================
+#  MQTT PUBLISHING
+#  Supports generic MQTT broker (e.g. Home Assistant) and Adafruit IO.
+#  Uses connect-publish-disconnect per interval to keep memory clean.
+# ======================================================================
+
+last_mqtt_send = 0.0
+last_aio_send = 0.0
+
+def _mqtt_publish_one(broker, port, user, password, topics_payloads, use_ssl=False):
+    """Connect to an MQTT broker, publish a dict of {topic: payload_str}, disconnect.
+    topics_payloads is a list of (topic, payload_str) tuples."""
+    if not _HAS_MQTT or MQTT is None:
+        return False
+    if wifi is None or not wifi.radio.connected:
+        return False
+    pool = socketpool.SocketPool(wifi.radio) if socketpool is not None else None
+    if pool is None:
+        return False
+    try:
+        mqtt_client = MQTT.MQTT(
+            broker=broker,
+            port=int(port),
+            username=user or None,
+            password=password or None,
+            socket_pool=pool,
+            ssl_context=None,
+            connect_retries=1,
+            socket_timeout=5,
+            keep_alive=15,
+        )
+        mqtt_client.connect()
+        for topic, payload in topics_payloads:
+            try:
+                mqtt_client.publish(topic, payload)
+            except Exception as e:
+                print("MQTT publish error:", topic, e)
+        mqtt_client.disconnect()
+        return True
+    except Exception as e:
+        print("MQTT error:", e)
+        return False
+
+
+def publish_to_mqtt():
+    """Publish current CO2/temp/RH to the configured MQTT broker."""
+    global last_mqtt_send
+    broker = settings.get("mqtt_broker", "").strip()
+    if not broker:
+        return False
+    port = settings.get("mqtt_port", 1883)
+    user = settings.get("mqtt_user", "")
+    password = settings.get("mqtt_pass", "")
+    prefix = (settings.get("mqtt_topic_prefix", "knowco2") or "knowco2").strip()
+    topics = []
+    if last_co2 is not None:
+        topics.append(("%s/co2" % prefix, str(int(last_co2))))
+    if last_temp_c is not None:
+        topics.append(("%s/temp_c" % prefix, "%.2f" % last_temp_c))
+    if last_rh is not None:
+        topics.append(("%s/rh" % prefix, "%.2f" % last_rh))
+    if not topics:
+        return False
+    ok = _mqtt_publish_one(broker, port, user, password, topics)
+    if ok:
+        log("mqtt", "MQTT published to", broker, min_interval=30.0)
+    else:
+        log("mqtt_err", "MQTT publish failed to", broker, min_interval=30.0)
+    return ok
+
+
+def publish_to_adafruit_io():
+    """Publish current readings to Adafruit IO via MQTT."""
+    global last_aio_send
+    aio_user = settings.get("aio_username", "").strip()
+    aio_key = settings.get("aio_key", "").strip()
+    if not aio_user or not aio_key:
+        return False
+    group = (settings.get("aio_group_key", "knowco2") or "knowco2").strip()
+    # Adafruit IO MQTT topic format: <username>/feeds/<group>.<feed>
+    topics = []
+    if last_co2 is not None:
+        topics.append(("%s/feeds/%s.co2" % (aio_user, group), str(int(last_co2))))
+    if last_temp_c is not None:
+        topics.append(("%s/feeds/%s.temperature" % (aio_user, group), "%.2f" % last_temp_c))
+    if last_rh is not None:
+        topics.append(("%s/feeds/%s.humidity" % (aio_user, group), "%.2f" % last_rh))
+    if not topics:
+        return False
+    ok = _mqtt_publish_one("io.adafruit.com", 1883, aio_user, aio_key, topics)
+    if ok:
+        log("aio", "Adafruit IO published", min_interval=30.0)
+    else:
+        log("aio_err", "Adafruit IO publish failed", min_interval=30.0)
+    return ok
+
 #  NTP TIME SYNC (STA only)
 # ======================================================================
 
@@ -3527,6 +5424,7 @@ last_batt_refresh = 0.0
 last_wifi_ind_refresh = 0.0
 cached_vbat = None
 cached_pct = None
+last_dim_check = 0.0
 
 
 # ======================================================================
@@ -3811,6 +5709,22 @@ while True:
                 else:
                     cloud_failures += 1
 
+        # MQTT publish (periodic) - STA only
+        mqtt_enabled = settings.get("mqtt_enabled", False)
+        if mqtt_enabled and settings.get("mqtt_broker", "").strip():
+            mqtt_interval = max(15, int(settings.get("mqtt_interval_sec", 60) or 60))
+            if now - last_mqtt_send > mqtt_interval:
+                last_mqtt_send = now
+                publish_to_mqtt()
+
+        # Adafruit IO publish (periodic) - STA only
+        aio_enabled = settings.get("aio_enabled", False)
+        if aio_enabled and settings.get("aio_username", "").strip() and settings.get("aio_key", "").strip():
+            aio_interval = max(15, int(settings.get("aio_interval_sec", 60) or 60))
+            if now - last_aio_send > aio_interval:
+                last_aio_send = now
+                publish_to_adafruit_io()
+
     # If we're in AP mode but the HTTP socket died, restart it.
     try:
         if wifi_mode == WIFI_MODE_AP and http_server_sock is None:
@@ -3826,6 +5740,35 @@ while True:
             log('graph', 'Graph redraw error:', e, min_interval=2.0)
         # Clear the request flag; new samples or mode changes will set it again.
         graph_refresh_needed = False
+
+    # Display dimming schedule (checks every 60 s, requires NTP)
+    if (now - last_dim_check) >= 60.0:
+        last_dim_check = now
+        if settings.get("dim_enabled", False) and ntp_synced:
+            try:
+                import rtc as _rtc_dim
+                hour = _rtc_dim.RTC().datetime.tm_hour
+                start_h = int(settings.get("dim_start_hour", 22) or 22)
+                end_h = int(settings.get("dim_end_hour", 7) or 7)
+                dim_pct = max(0, min(100, int(settings.get("dim_brightness", 10) or 10)))
+                # Handle overnight ranges (e.g. 22–7)
+                if start_h > end_h:
+                    in_dim = (hour >= start_h) or (hour < end_h)
+                else:
+                    in_dim = start_h <= hour < end_h
+                target_brightness = (dim_pct / 100.0) if in_dim else 1.0
+                try:
+                    board.DISPLAY.brightness = target_brightness
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        elif not settings.get("dim_enabled", False):
+            # Restore full brightness if dimming was disabled
+            try:
+                board.DISPLAY.brightness = 1.0
+            except Exception:
+                pass
 
     # Memory maintenance + monitor (very low overhead)
     if (now - last_gc_ts) >= MEM_MONITOR_INTERVAL_S:

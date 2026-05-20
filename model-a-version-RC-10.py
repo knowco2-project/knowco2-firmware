@@ -1,6 +1,6 @@
 # knowco2 firmware (AP portal + STA + mDNS)
 # Target: Adafruit Feather ESP32-S3 Reverse TFT (CircuitPython 9.2.9)
-# Version: RC-9  (clean boot display)
+# Version: RC-10  (MQTT, Adafruit IO, OTA, POST auth, CSV export, display dimming)
 # ----------------------------------------------------------------------
 # FEATURE SUMMARY
 # - Splash screen with centered logo bitmap and automatic cleanup.
@@ -18,7 +18,25 @@
 # - Memory monitor and status logging with throttling to avoid spam.
 # - Sensor CRC failure tracking, stale-sample watchdog, recovery logic,
 #   and MCU watchdog reset for hard stalls.
-# RC-9 CHANGES
+# RC-10 CHANGES
+# - Settings and login forms now POST rather than GET, so passwords and
+#   credentials are no longer visible in browser history or server logs.
+#   GET parameter auth is still accepted for backward compat (API use).
+# - CSV export: GET /export.csv returns all in-RAM history as a
+#   downloadable CSV (seconds_ago, co2_ppm, temp_c, rh_pct).
+# - MQTT publishing: configurable broker (host, port, user, pass, topic
+#   prefix, interval).  Publishes CO₂/temp/RH on each interval (STA only).
+#   Works with Home Assistant Mosquitto or any standard MQTT broker.
+# - Adafruit IO publishing: separate AIO credentials (username + key),
+#   configurable group key and interval.  Publishes to AIO feeds alongside
+#   MQTT and cloud (all three can run simultaneously).
+# - OTA firmware update: GET /update shows a form; POST /update accepts a
+#   firmware_url parameter, fetches the file, writes to /code.py, and
+#   soft-resets.  Requires admin password if set.  STA mode only.
+# - Display dimming schedule: optional dim_enabled setting with
+#   dim_start_hour, dim_end_hour (0-23) and dim_brightness (0-100%).
+#   Requires NTP sync.  Checked every 60 s in the main loop.
+# RC-9 CHANGES (carried forward)
 # - boot.py: suppress CircuitPython REPL terminal text on the built-in TFT
 #   as early as possible by setting display.root_group = displayio.Group()
 #   and display.rotation = 180.  Users no longer see Adafruit boot text
@@ -53,6 +71,16 @@ import digitalio
 import json
 import os
 import binascii
+
+# MQTT (optional — install adafruit_minimqtt on CIRCUITPY/lib/)
+try:
+    import adafruit_minimqtt.adafruit_minimqtt as MQTT
+    _HAS_MQTT = True
+except Exception:
+    MQTT = None
+    _HAS_MQTT = False
+    print("adafruit_minimqtt not available; MQTT/AIO disabled")
+
 BOOT_TIME_MONO = time.monotonic()
 
 # Make sure no socket operation can block forever (helps prevent internal watchdog expiry).
@@ -766,6 +794,31 @@ settings = {
     "cloud_device_token": "",
     "cloud_interval_sec": 60,
 
+    # ---- MQTT broker (e.g. Home Assistant) ----
+    # mqtt_enabled: publish CO2/temp/RH to a standard MQTT broker.
+    "mqtt_enabled": False,
+    "mqtt_broker": "",           # hostname or IP
+    "mqtt_port": 1883,
+    "mqtt_user": "",
+    "mqtt_pass": "",
+    "mqtt_topic_prefix": "knowco2",  # topics: <prefix>/co2, /temp_c, /rh
+    "mqtt_interval_sec": 60,
+
+    # ---- Adafruit IO ----
+    "aio_enabled": False,
+    "aio_username": "",
+    "aio_key": "",
+    "aio_group_key": "knowco2",  # feed names: <group>.co2, .temperature, .humidity
+    "aio_interval_sec": 60,
+
+    # ---- Display dimming schedule ----
+    # dim_enabled: automatically dim the display between dim_start_hour and dim_end_hour.
+    # Requires NTP sync.  dim_brightness is 0-100 (percent of full brightness).
+    "dim_enabled": False,
+    "dim_start_hour": 22,   # 10 PM
+    "dim_end_hour": 7,      # 7 AM
+    "dim_brightness": 10,   # 10% during dim hours
+
     # Optional admin password to protect the settings page.  If this string is
     # non-empty, the root settings page will require a matching "pw" query
     # parameter.  Use the web UI below to set or clear this password.
@@ -979,6 +1032,47 @@ def update_settings_from_params(params):
         settings["cloud_device_token"] = params["cloud_token"]
     if "cloud_interval_sec" in params:
         try: settings["cloud_interval_sec"] = int(params["cloud_interval_sec"])
+        except Exception: pass
+
+    # MQTT broker settings
+    settings["mqtt_enabled"] = "mqtt_enabled" in params
+    if "mqtt_broker" in params:
+        settings["mqtt_broker"] = params["mqtt_broker"].strip()
+    if "mqtt_port" in params:
+        try: settings["mqtt_port"] = int(params["mqtt_port"])
+        except Exception: pass
+    if "mqtt_user" in params:
+        settings["mqtt_user"] = params["mqtt_user"]
+    if "mqtt_pass" in params and params["mqtt_pass"]:
+        settings["mqtt_pass"] = params["mqtt_pass"]
+    if "mqtt_topic_prefix" in params and params["mqtt_topic_prefix"]:
+        settings["mqtt_topic_prefix"] = params["mqtt_topic_prefix"].strip()
+    if "mqtt_interval_sec" in params:
+        try: settings["mqtt_interval_sec"] = max(15, int(params["mqtt_interval_sec"]))
+        except Exception: pass
+
+    # Adafruit IO settings
+    settings["aio_enabled"] = "aio_enabled" in params
+    if "aio_username" in params:
+        settings["aio_username"] = params["aio_username"].strip()
+    if "aio_key" in params and params["aio_key"]:
+        settings["aio_key"] = params["aio_key"]
+    if "aio_group_key" in params and params["aio_group_key"]:
+        settings["aio_group_key"] = params["aio_group_key"].strip()
+    if "aio_interval_sec" in params:
+        try: settings["aio_interval_sec"] = max(15, int(params["aio_interval_sec"]))
+        except Exception: pass
+
+    # Display dimming schedule
+    settings["dim_enabled"] = "dim_enabled" in params
+    if "dim_start_hour" in params:
+        try: settings["dim_start_hour"] = max(0, min(23, int(params["dim_start_hour"])))
+        except Exception: pass
+    if "dim_end_hour" in params:
+        try: settings["dim_end_hour"] = max(0, min(23, int(params["dim_end_hour"])))
+        except Exception: pass
+    if "dim_brightness" in params:
+        try: settings["dim_brightness"] = max(0, min(100, int(params["dim_brightness"])))
         except Exception: pass
 
     # Validate and reorder threshold values to ensure they are sensible.  Clamp all
@@ -2008,6 +2102,35 @@ def _read_request_head(conn, max_bytes=2048, max_wait=0.6):
             time.sleep(0.01)
     return data
 
+def _read_request_body(conn, headers_raw, max_bytes=8192, max_wait=3.0):
+    """Read the POST body from conn.  headers_raw is the raw bytes of the request
+    head (already read).  Returns body as bytes or b'' on error."""
+    try:
+        content_length = 0
+        for line in headers_raw.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                try:
+                    content_length = int(line.split(b":", 1)[1].strip())
+                except Exception:
+                    pass
+                break
+        if content_length <= 0:
+            return b""
+        content_length = min(content_length, max_bytes)
+        body = b""
+        start = time.monotonic()
+        while len(body) < content_length and (time.monotonic() - start) < max_wait:
+            try:
+                chunk = sock_recv(conn, min(512, content_length - len(body)))
+                if not chunk:
+                    break
+                body += chunk
+            except OSError:
+                time.sleep(0.01)
+        return body
+    except Exception:
+        return b""
+
 _CAPTIVE_PATHS_204 = {
     "/generate_204", "/gen_204", "/ncsi.txt", "/connecttest.txt", "/success.txt", "/hotspot-detect.html",
     "/canonical.html", "/mobile/status.php", "/library/test/success.html", "/fwlink", "/fwlink/", "/redirect",
@@ -2039,6 +2162,33 @@ def render_settings_page():
     # If no cloud API URL is stored yet, prefill with the default knowco2 API endpoint.
     if not cloud_api:
         cloud_api = "https://api.knowco2.com"
+
+    def esc_attr(val):
+        try:
+            return str(val).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        except Exception:
+            return ""
+
+    # MQTT section
+    mqtt_enabled = settings.get("mqtt_enabled", False)
+    mqtt_broker = esc_attr(str(settings.get("mqtt_broker", "") or ""))
+    mqtt_port = esc_attr(str(settings.get("mqtt_port", 1883) or 1883))
+    mqtt_user = esc_attr(str(settings.get("mqtt_user", "") or ""))
+    mqtt_topic_prefix = esc_attr(str(settings.get("mqtt_topic_prefix", "knowco2") or "knowco2"))
+    mqtt_interval = esc_attr(str(settings.get("mqtt_interval_sec", 60) or 60))
+    mqtt_checked = "checked" if mqtt_enabled else ""
+
+    aio_enabled = settings.get("aio_enabled", False)
+    aio_username = esc_attr(str(settings.get("aio_username", "") or ""))
+    aio_group = esc_attr(str(settings.get("aio_group_key", "knowco2") or "knowco2"))
+    aio_interval = esc_attr(str(settings.get("aio_interval_sec", 60) or 60))
+    aio_checked = "checked" if aio_enabled else ""
+
+    dim_enabled = settings.get("dim_enabled", False)
+    dim_start = esc_attr(str(settings.get("dim_start_hour", 22) or 22))
+    dim_end = esc_attr(str(settings.get("dim_end_hour", 7) or 7))
+    dim_brightness = esc_attr(str(settings.get("dim_brightness", 10) or 10))
+    dim_checked = "checked" if dim_enabled else ""
 
     tm = temp_mode
     dm = display_mode
@@ -2139,7 +2289,7 @@ def render_settings_page():
       <div id="chart-debug"></div>
     </div>
 
-    <form method="GET" action="/">""" + pw_hidden_field + """
+    <form method="POST" action="/">""" + pw_hidden_field + """
       <h2>CO2 &amp; Graph</h2>
       <fieldset>
         <legend>Thresholds</legend>
@@ -2282,6 +2432,33 @@ def render_settings_page():
 
       <!-- Device identity section removed; Device ID is now under Cloud telemetry and local endpoints moved to bottom. -->
 
+      <fieldset><legend>MQTT Broker (Home Assistant etc.)</legend>
+        <label><input type='checkbox' name='mqtt_enabled' """ + mqtt_checked + """> Enable MQTT publishing</label>
+        <label>Broker hostname/IP<br><input type='text' name='mqtt_broker' value='""" + mqtt_broker + """' placeholder='192.168.1.x or mqtt.example.com'></label>
+        <label>Port<br><input type='number' name='mqtt_port' value='""" + mqtt_port + """' min='1' max='65535'></label>
+        <label>Username (optional)<br><input type='text' name='mqtt_user' value='""" + mqtt_user + """'></label>
+        <label>Password (optional)<br><input type='password' name='mqtt_pass' placeholder='leave blank to keep current'></label>
+        <label>Topic prefix<br><input type='text' name='mqtt_topic_prefix' value='""" + mqtt_topic_prefix + """' placeholder='knowco2'></label>
+        <label>Publish interval (seconds)<br><input type='number' name='mqtt_interval_sec' value='""" + mqtt_interval + """' min='15' max='3600'></label>
+        <small>Topics: &lt;prefix&gt;/co2, &lt;prefix&gt;/temp_c, &lt;prefix&gt;/rh</small>
+      </fieldset>
+      <fieldset><legend>Adafruit IO</legend>
+        <label><input type='checkbox' name='aio_enabled' """ + aio_checked + """> Enable Adafruit IO</label>
+        <label>AIO Username<br><input type='text' name='aio_username' value='""" + aio_username + """'></label>
+        <label>AIO Key<br><input type='password' name='aio_key' placeholder='leave blank to keep current'></label>
+        <label>Feed group key<br><input type='text' name='aio_group_key' value='""" + aio_group + """' placeholder='knowco2'></label>
+        <label>Publish interval (seconds)<br><input type='number' name='aio_interval_sec' value='""" + aio_interval + """' min='15' max='3600'></label>
+        <small>Feeds: &lt;group&gt;.co2, &lt;group&gt;.temperature, &lt;group&gt;.humidity</small>
+      </fieldset>
+      <fieldset><legend>Display Dimming Schedule</legend>
+        <label><input type='checkbox' name='dim_enabled' """ + dim_checked + """> Enable scheduled dimming (requires NTP)</label>
+        <label>Dim start hour (0-23)<br><input type='number' name='dim_start_hour' value='""" + dim_start + """' min='0' max='23'></label>
+        <label>Dim end hour (0-23)<br><input type='number' name='dim_end_hour' value='""" + dim_end + """' min='0' max='23'></label>
+        <label>Brightness during dim period (0-100%)<br><input type='number' name='dim_brightness' value='""" + dim_brightness + """' min='0' max='100'></label>
+        <small>Example: start=22, end=7 dims from 10 PM to 7 AM.</small>
+      </fieldset>
+      <p><a href='/update' style='color:#e53935;font-weight:600;'>&#8593; OTA Firmware Update</a></p>
+
       <div class="row">
         <button type="submit">Save settings</button>
       </div>
@@ -2289,7 +2466,8 @@ def render_settings_page():
         <small>
           <b>Local endpoints:</b><br>
           • <code>GET /status</code> → live JSON status<br>
-          • <code>GET /data</code> → CO₂ history JSON (up to """ + str(MAX_WEB_POINTS) + """ points)
+          • <code>GET /data</code> → CO₂ history JSON (up to """ + str(MAX_WEB_POINTS) + """ points)<br>
+          • <code>GET /export.csv</code> → download CO₂ history as CSV
         </small>
       </div>
       <div class="row">
@@ -2514,6 +2692,46 @@ def handle_data_route(conn):
     header, body = make_json_response({"co2": ints})
     send_all(conn, header)
     send_all(conn, body)
+
+def handle_export_csv_route(conn):
+    """Return the in-RAM CO2 history as a downloadable CSV file."""
+    try:
+        import rtc as _rtc
+        now_ts = int(time.time())
+    except Exception:
+        now_ts = 0
+
+    rows = ["seconds_ago,co2_ppm,temp_c,rh_pct"]
+    pts = co2_history[-MAX_WEB_POINTS:]
+    total = len(pts)
+    for i, v in enumerate(pts):
+        # Estimate when this sample was taken, working backwards from now.
+        age_s = int((total - 1 - i) * SCD_MEASUREMENT_PERIOD)
+        co2_val = int(v) if v is not None else ""
+        # temp and rh are only available as the latest values, so omit for history
+        rows.append("%d,%s,," % (age_s, co2_val))
+    # Overwrite the last row with the most recent temp/rh if available
+    if total > 0 and last_temp_c is not None and last_rh is not None:
+        rows[-1] = "0,%s,%.1f,%.1f" % (
+            int(pts[-1]) if pts[-1] is not None else "",
+            last_temp_c,
+            last_rh
+        )
+    csv_body = "\r\n".join(rows) + "\r\n"
+    csv_bytes = csv_body.encode("utf-8")
+    header = build_response(
+        200,
+        "text/csv; charset=utf-8",
+        csv_bytes
+    )[0]
+    # Add Content-Disposition to trigger download in browser
+    header = header.replace(
+        b"\r\n\r\n",
+        b"\r\nContent-Disposition: attachment; filename=\"knowco2_export.csv\"\r\n\r\n",
+        1
+    )
+    send_all(conn, header)
+    send_all(conn, csv_bytes)
 
 def handle_status_route(conn):
     if last_temp_c is not None:
@@ -2789,6 +3007,131 @@ def handle_calibration_route(conn, params):
     send_all(conn, header)
     send_all(conn, body)
 
+def handle_update_route(conn, params, method=b"GET"):
+    """OTA firmware update page.  GET shows the form; POST fetches a URL and writes to /code.py."""
+    global settings
+
+    # Require admin password if set
+    admin_pw = settings.get("admin_password", "")
+    if admin_pw:
+        provided_pw = params.get("pw", "")
+        if provided_pw != admin_pw:
+            login_html = """<!DOCTYPE html>
+<html><head><meta charset='utf-8'><title>OTA Update - Login</title>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<style>body{font-family:sans-serif;background:#0b0b0b;color:#eee;margin:0}
+.wrap{max-width:480px;margin:0 auto;padding:16px;text-align:center}
+input{padding:6px;border-radius:4px;border:1px solid #444;background:#111;color:#eee;font-size:14px;width:80%;max-width:260px}
+button{margin-top:16px;padding:8px 16px;border-radius:4px;border:1px solid #00bcd4;background:#00bcd4;color:#000;font-weight:600;cursor:pointer}
+</style></head><body><div class='wrap'>
+<h1>Know CO&#8322; OTA</h1><p>Enter settings password:</p>
+<form method='POST' action='/update'>
+<label>Password<br><input type='password' name='pw'></label><br>
+<button type='submit'>Unlock</button></form></div></body></html>"""
+            header, body = make_html_response(login_html)
+            send_all(conn, header)
+            send_all(conn, body)
+            return
+
+    if method == b"POST" and "firmware_url" in params:
+        fw_url = params.get("firmware_url", "").strip()
+        if not fw_url:
+            _send_ota_result(conn, False, "No URL provided.")
+            return
+        if wifi_mode != WIFI_MODE_STA or wifi is None or not wifi.radio.connected:
+            _send_ota_result(conn, False, "Must be in STA (WiFi) mode to download firmware.")
+            return
+        # Fetch and write the firmware file
+        try:
+            import ssl as _ssl
+            import adafruit_requests as _requests
+            pool = socketpool.SocketPool(wifi.radio)
+            if fw_url.startswith("https"):
+                _ssl_ctx = _ssl.create_default_context()
+                session = _requests.Session(pool, _ssl_ctx)
+            else:
+                session = _requests.Session(pool)
+            response = session.get(fw_url, timeout=30)
+            if response.status_code != 200:
+                _send_ota_result(conn, False, "HTTP %d fetching firmware." % response.status_code)
+                return
+            # Write to temp file first, then rename
+            tmp_path = "/code.py.ota"
+            with open(tmp_path, "w") as f:
+                chunk_size = 512
+                content = response.content  # bytes
+                for i in range(0, len(content), chunk_size):
+                    f.write(content[i:i+chunk_size].decode("utf-8", "ignore"))
+            response.close()
+            # Rename to code.py
+            try:
+                import os as _os
+                try:
+                    _os.remove("/code.py.bak")
+                except Exception:
+                    pass
+                try:
+                    _os.rename("/code.py", "/code.py.bak")
+                except Exception:
+                    pass
+                _os.rename(tmp_path, "/code.py")
+            except Exception as rename_err:
+                _send_ota_result(conn, False, "File rename failed: " + str(rename_err))
+                return
+            _send_ota_result(conn, True, "Firmware written to /code.py. Device will reboot in 3 seconds.")
+            time.sleep(3)
+            if microcontroller is not None:
+                microcontroller.reset()
+            import supervisor as _sup
+            _sup.reload()
+        except Exception as ota_err:
+            _send_ota_result(conn, False, "OTA error: " + str(ota_err))
+        return
+
+    # GET: show the update form
+    pw_val = params.get("pw", "")
+    pw_field = ("<input type='hidden' name='pw' value='%s'>" % pw_val) if pw_val else ""
+    form_html = """<!DOCTYPE html>
+<html><head><meta charset='utf-8'><title>Know CO2 - OTA Update</title>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0b0b0b;color:#eee;margin:0}
+.wrap{max-width:600px;margin:0 auto;padding:16px}
+h1{color:#00bcd4;margin-top:8px}
+label{display:block;margin-top:12px;font-size:14px}
+input[type=text],input[type=url]{width:100%;box-sizing:border-box;padding:8px;border-radius:4px;border:1px solid #444;background:#111;color:#eee;font-size:14px}
+button{margin-top:16px;padding:8px 20px;border-radius:4px;border:1px solid #e53935;background:#e53935;color:#fff;font-weight:600;cursor:pointer;font-size:14px}
+.warn{color:#ffb300;font-size:13px;margin-top:8px}
+a{color:#00bcd4}
+</style></head><body><div class='wrap'>
+<h1>OTA Firmware Update</h1>
+<p>Provide a direct URL to a <code>.py</code> firmware file. The device will download it, write it to <code>/code.py</code>, and reboot.</p>
+<p class='warn'>&#9888; This will overwrite your current firmware. Ensure the URL is correct and the device has a stable WiFi connection.</p>
+<form method='POST' action='/update'>""" + pw_field + """
+<label>Firmware URL<br><input type='url' name='firmware_url' placeholder='http://192.168.1.x/firmware.py' required></label>
+<button type='submit'>Download &amp; Install</button>
+</form>
+<p style='margin-top:16px'><a href='/'>&#8592; Back to Settings</a></p>
+</div></body></html>"""
+    header, body = make_html_response(form_html)
+    send_all(conn, header)
+    send_all(conn, body)
+
+
+def _send_ota_result(conn, success, message):
+    color = "#4caf50" if success else "#e53935"
+    icon = "&#10003;" if success else "&#10007;"
+    html = """<!DOCTYPE html><html><head><meta charset='utf-8'><title>OTA Result</title>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<style>body{font-family:sans-serif;background:#0b0b0b;color:#eee;text-align:center;padding:32px}
+h2{color:%s}</style></head><body>
+<h2>%s %s</h2><p>%s</p>
+<a href='/' style='color:#00bcd4'>Back to Settings</a>
+</body></html>""" % (color, icon, "Success" if success else "Error", message)
+    header, body = make_html_response(html)
+    send_all(conn, header)
+    send_all(conn, body)
+
+
 def handle_root_route(conn, params):
     # If an admin password is configured, require that the caller supply a matching
     # "pw" query parameter.  If no valid password is supplied, present a simple
@@ -2827,7 +3170,7 @@ def handle_root_route(conn, params):
   <div class='wrap'>
     <h1>Know CO₂</h1>
     <p>Please enter the settings password to continue.</p>
-    <form method='GET' action='/'>
+    <form method='POST' action='/'>
       <label>Password<br><input type='password' name='pw' autocomplete='off'></label>
       <button type='submit'>Unlock</button>
     </form>
@@ -3001,7 +3344,7 @@ def handle_http_client():
             send_all(conn, header)
             return
 
-        if method not in (b"GET", b"HEAD"):
+        if method not in (b"GET", b"HEAD", b"POST"):
             header, body = build_response(405, "text/plain; charset=utf-8", b"Method Not Allowed")
             send_all(conn, header)
             send_all(conn, body)
@@ -3009,13 +3352,33 @@ def handle_http_client():
 
         route, params = parse_query(path)
 
+        # For POST requests, read the body and merge into params (body params override query params).
+        if method == b"POST":
+            post_body = _read_request_body(conn, data)
+            if post_body:
+                try:
+                    post_body_str = post_body.decode("utf-8", "ignore")
+                    for pair in post_body_str.split("&"):
+                        if not pair:
+                            continue
+                        if "=" in pair:
+                            k, v = pair.split("=", 1)
+                        else:
+                            k, v = pair, ""
+                        params[url_decode(k)] = url_decode(v)
+                except Exception:
+                    pass
+
         if route == "/data":
             handle_data_route(conn)
         elif route == "/status":
             handle_status_route(conn)
+        elif route == "/export.csv":
+            handle_export_csv_route(conn)
         elif route == "/calibration":
-            # Serve the calibration page and allow updating calibration settings.
             handle_calibration_route(conn, params)
+        elif route == "/update":
+            handle_update_route(conn, params, method=method)
         else:
             # Default to the settings page for all other routes (including "/").
             handle_root_route(conn, params)
@@ -3403,6 +3766,102 @@ def cloud_send(payload_dict):
         except Exception:
             pass
 
+# ======================================================================
+#  MQTT PUBLISHING
+#  Supports generic MQTT broker (e.g. Home Assistant) and Adafruit IO.
+#  Uses connect-publish-disconnect per interval to keep memory clean.
+# ======================================================================
+
+last_mqtt_send = 0.0
+last_aio_send = 0.0
+
+def _mqtt_publish_one(broker, port, user, password, topics_payloads, use_ssl=False):
+    """Connect to an MQTT broker, publish a dict of {topic: payload_str}, disconnect.
+    topics_payloads is a list of (topic, payload_str) tuples."""
+    if not _HAS_MQTT or MQTT is None:
+        return False
+    if wifi is None or not wifi.radio.connected:
+        return False
+    pool = socketpool.SocketPool(wifi.radio) if socketpool is not None else None
+    if pool is None:
+        return False
+    try:
+        mqtt_client = MQTT.MQTT(
+            broker=broker,
+            port=int(port),
+            username=user or None,
+            password=password or None,
+            socket_pool=pool,
+            ssl_context=None,
+            connect_retries=1,
+            socket_timeout=5,
+            keep_alive=15,
+        )
+        mqtt_client.connect()
+        for topic, payload in topics_payloads:
+            try:
+                mqtt_client.publish(topic, payload)
+            except Exception as e:
+                print("MQTT publish error:", topic, e)
+        mqtt_client.disconnect()
+        return True
+    except Exception as e:
+        print("MQTT error:", e)
+        return False
+
+
+def publish_to_mqtt():
+    """Publish current CO2/temp/RH to the configured MQTT broker."""
+    global last_mqtt_send
+    broker = settings.get("mqtt_broker", "").strip()
+    if not broker:
+        return False
+    port = settings.get("mqtt_port", 1883)
+    user = settings.get("mqtt_user", "")
+    password = settings.get("mqtt_pass", "")
+    prefix = (settings.get("mqtt_topic_prefix", "knowco2") or "knowco2").strip()
+    topics = []
+    if last_co2 is not None:
+        topics.append(("%s/co2" % prefix, str(int(last_co2))))
+    if last_temp_c is not None:
+        topics.append(("%s/temp_c" % prefix, "%.2f" % last_temp_c))
+    if last_rh is not None:
+        topics.append(("%s/rh" % prefix, "%.2f" % last_rh))
+    if not topics:
+        return False
+    ok = _mqtt_publish_one(broker, port, user, password, topics)
+    if ok:
+        log("mqtt", "MQTT published to", broker, min_interval=30.0)
+    else:
+        log("mqtt_err", "MQTT publish failed to", broker, min_interval=30.0)
+    return ok
+
+
+def publish_to_adafruit_io():
+    """Publish current readings to Adafruit IO via MQTT."""
+    global last_aio_send
+    aio_user = settings.get("aio_username", "").strip()
+    aio_key = settings.get("aio_key", "").strip()
+    if not aio_user or not aio_key:
+        return False
+    group = (settings.get("aio_group_key", "knowco2") or "knowco2").strip()
+    # Adafruit IO MQTT topic format: <username>/feeds/<group>.<feed>
+    topics = []
+    if last_co2 is not None:
+        topics.append(("%s/feeds/%s.co2" % (aio_user, group), str(int(last_co2))))
+    if last_temp_c is not None:
+        topics.append(("%s/feeds/%s.temperature" % (aio_user, group), "%.2f" % last_temp_c))
+    if last_rh is not None:
+        topics.append(("%s/feeds/%s.humidity" % (aio_user, group), "%.2f" % last_rh))
+    if not topics:
+        return False
+    ok = _mqtt_publish_one("io.adafruit.com", 1883, aio_user, aio_key, topics)
+    if ok:
+        log("aio", "Adafruit IO published", min_interval=30.0)
+    else:
+        log("aio_err", "Adafruit IO publish failed", min_interval=30.0)
+    return ok
+
 #  NTP TIME SYNC (STA only)
 # ======================================================================
 
@@ -3527,6 +3986,7 @@ last_batt_refresh = 0.0
 last_wifi_ind_refresh = 0.0
 cached_vbat = None
 cached_pct = None
+last_dim_check = 0.0
 
 
 # ======================================================================
@@ -3811,6 +4271,22 @@ while True:
                 else:
                     cloud_failures += 1
 
+        # MQTT publish (periodic) - STA only
+        mqtt_enabled = settings.get("mqtt_enabled", False)
+        if mqtt_enabled and settings.get("mqtt_broker", "").strip():
+            mqtt_interval = max(15, int(settings.get("mqtt_interval_sec", 60) or 60))
+            if now - last_mqtt_send > mqtt_interval:
+                last_mqtt_send = now
+                publish_to_mqtt()
+
+        # Adafruit IO publish (periodic) - STA only
+        aio_enabled = settings.get("aio_enabled", False)
+        if aio_enabled and settings.get("aio_username", "").strip() and settings.get("aio_key", "").strip():
+            aio_interval = max(15, int(settings.get("aio_interval_sec", 60) or 60))
+            if now - last_aio_send > aio_interval:
+                last_aio_send = now
+                publish_to_adafruit_io()
+
     # If we're in AP mode but the HTTP socket died, restart it.
     try:
         if wifi_mode == WIFI_MODE_AP and http_server_sock is None:
@@ -3826,6 +4302,35 @@ while True:
             log('graph', 'Graph redraw error:', e, min_interval=2.0)
         # Clear the request flag; new samples or mode changes will set it again.
         graph_refresh_needed = False
+
+    # Display dimming schedule (checks every 60 s, requires NTP)
+    if (now - last_dim_check) >= 60.0:
+        last_dim_check = now
+        if settings.get("dim_enabled", False) and ntp_synced:
+            try:
+                import rtc as _rtc_dim
+                hour = _rtc_dim.RTC().datetime.tm_hour
+                start_h = int(settings.get("dim_start_hour", 22) or 22)
+                end_h = int(settings.get("dim_end_hour", 7) or 7)
+                dim_pct = max(0, min(100, int(settings.get("dim_brightness", 10) or 10)))
+                # Handle overnight ranges (e.g. 22–7)
+                if start_h > end_h:
+                    in_dim = (hour >= start_h) or (hour < end_h)
+                else:
+                    in_dim = start_h <= hour < end_h
+                target_brightness = (dim_pct / 100.0) if in_dim else 1.0
+                try:
+                    board.DISPLAY.brightness = target_brightness
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        elif not settings.get("dim_enabled", False):
+            # Restore full brightness if dimming was disabled
+            try:
+                board.DISPLAY.brightness = 1.0
+            except Exception:
+                pass
 
     # Memory maintenance + monitor (very low overhead)
     if (now - last_gc_ts) >= MEM_MONITOR_INTERVAL_S:
