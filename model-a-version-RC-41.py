@@ -5571,6 +5571,10 @@ last_wifi_ind_refresh = 0.0
 cached_vbat = None
 cached_pct = None
 last_dim_check = 0.0
+# Deferred settings save: set to (now + delay) when a button triggers a settings
+# change that doesn't need an instant flash write.  Avoids blocking the main loop
+# on the button press itself — the actual save happens once the deadline passes.
+_save_deferred_ts = 0.0
 
 
 # ======================================================================
@@ -5618,7 +5622,7 @@ while True:
     if a_now and (not prev_a) and screen == SCREEN_MAIN:
         temp_mode = "C" if temp_mode == "F" else "F"
         settings["temp_mode"] = temp_mode
-        save_settings()
+        _save_deferred_ts = now + 1.5  # persist to flash shortly after, not during press
         refresh_text()
         show_status("Temp: " + temp_mode)
 
@@ -5630,7 +5634,7 @@ while True:
         if screen == SCREEN_MAIN:
             display_mode = (display_mode + 1) % 3
             settings["display_mode"] = display_mode
-            save_settings()
+            _save_deferred_ts = now + 1.5  # persist to flash shortly after, not during press
             update_visibility()
             # If the user switched into graph mode, schedule a redraw rather than doing it immediately.
             if display_mode == 2:
@@ -5955,5 +5959,10 @@ while True:
             else:
                 mem_free_ema = (0.2 * float(free_mem)) + (0.8 * mem_free_ema)
 
+    # Flush deferred settings save once the deadline has passed.
+    if _save_deferred_ts > 0.0 and now >= _save_deferred_ts:
+        _save_deferred_ts = 0.0
+        save_settings()
+
     handle_http_client()
-    time.sleep(0.02)
+    time.sleep(0.01)
