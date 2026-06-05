@@ -1,0 +1,191 @@
+name: Build and Release KnowCO2 Firmware
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0)"
+        required: true
+
+jobs:
+  build-release:
+    runs-on:
+      - codebuild-knowco2-firmware-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------ #
+      # Determine the release version
+      # ------------------------------------------------------------------ #
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.tag }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building release: $VERSION"
+
+      # ------------------------------------------------------------------ #
+      # Package 1 — OTA ZIP
+      # What the user uploads to http://knowco2-XXXX.local/update
+      # Contains everything except the lib/ directory (smaller download;
+      # lib rarely changes between releases).
+      # ------------------------------------------------------------------ #
+      - name: Build OTA ZIP
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          STAGING="staging-ota"
+          mkdir -p "$STAGING"
+
+          cp code.py boot.py "$STAGING/"
+          cp -r knowco2 "$STAGING/"
+          cp -r assets "$STAGING/"
+
+          cd "$STAGING"
+          zip -r "../knowco2-ota-${VERSION}.zip" .
+          cd ..
+
+          echo "OTA ZIP contents:"
+          unzip -l "knowco2-ota-${VERSION}.zip"
+
+      # ------------------------------------------------------------------ #
+      # Package 2 — Full Install ZIP
+      # User unzips directly onto the CIRCUITPY drive for a fresh install
+      # or a complete upgrade (includes lib/).
+      # Uses the lib snapshot from lib-*/  directory in the repo.
+      # ------------------------------------------------------------------ #
+      - name: Build Full Install ZIP
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          STAGING="staging-full"
+          mkdir -p "$STAGING/lib"
+
+          cp code.py boot.py "$STAGING/"
+          cp -r knowco2 "$STAGING/"
+          cp -r assets "$STAGING/"
+
+          # Use the versioned lib snapshot if present, otherwise fall back to lib/
+          LIB_DIR=$(ls -d lib-*-release 2>/dev/null | sort -r | head -1)
+          if [ -z "$LIB_DIR" ]; then
+            LIB_DIR="lib"
+          fi
+          echo "Using lib directory: $LIB_DIR"
+          cp -r "$LIB_DIR/." "$STAGING/lib/"
+
+          cd "$STAGING"
+          zip -r "../knowco2-full-${VERSION}.zip" .
+          cd ..
+
+          echo "Full ZIP contents:"
+          unzip -l "knowco2-full-${VERSION}.zip"
+
+      # ------------------------------------------------------------------ #
+      # Package 3 — Source ZIP
+      # Clean source tree without git internals, build artifacts, or
+      # macOS junk — useful for developers who want to read / modify code.
+      # ------------------------------------------------------------------ #
+      - name: Build Source ZIP
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          STAGING="staging-src"
+          mkdir -p "$STAGING"
+
+          rsync -a \
+            --exclude=".git" \
+            --exclude=".github" \
+            --exclude=".DS_Store" \
+            --exclude="staging-*" \
+            --exclude="*.zip" \
+            . "$STAGING/"
+
+          cd "$STAGING"
+          zip -r "../knowco2-source-${VERSION}.zip" .
+          cd ..
+
+          echo "Source ZIP contents:"
+          unzip -l "knowco2-source-${VERSION}.zip"
+
+      # ------------------------------------------------------------------ #
+      # Generate SHA-256 checksums for all artifacts
+      # ------------------------------------------------------------------ #
+      - name: Generate checksums
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          sha256sum \
+            "knowco2-ota-${VERSION}.zip" \
+            "knowco2-full-${VERSION}.zip" \
+            "knowco2-source-${VERSION}.zip" \
+            > "knowco2-${VERSION}-checksums.txt"
+          cat "knowco2-${VERSION}-checksums.txt"
+
+      # ------------------------------------------------------------------ #
+      # Extract firmware version string for the release notes
+      # ------------------------------------------------------------------ #
+      - name: Get firmware version string
+        id: fw_version
+        run: |
+          FW_VER=$(python3 -c "
+          import re, sys
+          content = open('knowco2/version.py').read()
+          m = re.search(r'FIRMWARE_VERSION\s*=\s*[\"\'](.*?)[\"\']', content)
+          print(m.group(1) if m else 'unknown')
+          ")
+          echo "FW_VER=$FW_VER" >> $GITHUB_OUTPUT
+          echo "Firmware version string: $FW_VER"
+
+      # ------------------------------------------------------------------ #
+      # Create GitHub Release
+      # ------------------------------------------------------------------ #
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          FW_VER="${{ steps.fw_version.outputs.FW_VER }}"
+
+          gh release create "$VERSION" \
+            --title "KnowCO2 Firmware $VERSION ($FW_VER)" \
+            --notes "$(cat <<'NOTES'
+          ## Installation options
+
+          | File | Use when |
+          |---|---|
+          | `knowco2-full-*.zip` | Fresh install or complete upgrade — unzip onto your `CIRCUITPY` drive |
+          | `knowco2-ota-*.zip` | OTA upgrade — upload at `http://knowco2-XXXX.local/update` |
+          | `knowco2-source-*.zip` | Source code — for developers who want to read or modify the firmware |
+
+          ## Installing CircuitPython (first time only)
+          The device needs CircuitPython **10.x** before this firmware will run.
+          Download the `.uf2` for the [Adafruit Feather ESP32-S3 Reverse TFT](https://circuitpython.org/board/adafruit_feather_esp32s3_reverse_tft/), double-tap reset to enter the bootloader, drag the `.uf2` onto the `FTHRS3BOOT` drive, then install this firmware using the full ZIP above.
+
+          ## Checksums
+          See `*-checksums.txt` attached below to verify your download.
+          NOTES
+          )" \
+            "knowco2-full-${VERSION}.zip" \
+            "knowco2-ota-${VERSION}.zip" \
+            "knowco2-source-${VERSION}.zip" \
+            "knowco2-${VERSION}-checksums.txt"
+
+      # ------------------------------------------------------------------ #
+      # Summary
+      # ------------------------------------------------------------------ #
+      - name: Release summary
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          echo "=========================================="
+          echo "  Release $VERSION published successfully"
+          echo "=========================================="
+          echo "  OTA ZIP:    knowco2-ota-${VERSION}.zip"
+          echo "  Full ZIP:   knowco2-full-${VERSION}.zip"
+          echo "  Source ZIP: knowco2-source-${VERSION}.zip"
+          echo "  Checksums:  knowco2-${VERSION}-checksums.txt"
+          echo "=========================================="
