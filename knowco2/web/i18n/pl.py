@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Odwr\xf3\u0107 wy\u015bwietlacz (monta\u017c do g\xf3ry nogami)",
     "help_flip": "Obraca ekran o 180\u00b0, aby by\u0142 czytelny przy monta\u017cu do g\xf3ry nogami. Przyciski nie s\u0105 dotknite.",
     "aria_flip_check": "Prze\u0142\u0105cz orientacj\u0119 wy\u015bwietlacza",
+    "help_wifi_multi": "Urz\u0105dzenie pr\xf3buje ka\u017cd\u0105 sie\u0107 po kolei. Przydatne w domach z wieloma routerami lub w podr\xf3\u017cy.",
     "skip_nav": "Przejd\u017a do g\u0142\xf3wnej tre\u015bci",
 }

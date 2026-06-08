@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "L\u1eadt m\xe0n h\xecnh (l\u1eafp ng\u01b0\u1ee3c)",
     "help_flip": "Xoay m\xe0n h\xecnh 180\u00b0 \u0111\u1ec3 \u0111\u1ecdc \u0111\xfang khi l\u1eafp ng\u01b0\u1ee3c. C\xe1c n\xfat kh\xf4ng b\u1ecb \u1ea3nh h\u01b0\u1edfng.",
     "aria_flip_check": "Chuy\u1ec3n \u0111\u1ed5i h\u01b0\u1edbng m\xe0n h\xecnh",
+    "help_wifi_multi": "Thi\u1ebft b\u1ecb th\u1eed t\u1eebng m\u1ea1ng theo th\u1ee9 t\u1ef1. H\u1eefu \xedch cho nh\xe0 c\xf3 nhi\u1ec1u b\u1ed9 \u0111\u1ecbnh tuy\u1ebfn ho\u1eb7c khi \u0111i du l\u1ecbch.",
     "skip_nav": "Chuy\u1ec3n \u0111\u1ebfn n\u1ed9i dung ch\xednh",
 }

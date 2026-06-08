@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Ekran\u0131 \xe7evir (ters monta\u015f)",
     "help_flip": "Ters monte edildi\u011finde do\u011fru okunmas\u0131 i\xe7in ekran\u0131 180\u00b0 d\xf6nd\xfcr\xfcr. D\xfc\u011fmeler etkilenmez.",
     "aria_flip_check": "Ekran y\xf6n\xfcn\xfc de\u011fi\u015ftir",
+    "help_wifi_multi": "Cihaz her a\u011f\u0131 s\u0131rayla dener. Birden fazla router\u2019a sahip evler veya seyahat i\xe7in kullan\u0131\u015fl\u0131d\u0131r.",
     "skip_nav": "Ana i\xe7eri\u011fe ge\xe7",
 }

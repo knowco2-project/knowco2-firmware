@@ -295,7 +295,11 @@ check_battery_boot()
 ui.update_visibility()
 
 # --- Wi-Fi: prefer STA if configured, else AP (with background retry) ---
-if (state.settings.get("sta_ssid") or "").strip() and (state.settings.get("sta_password") or "").strip():
+if any(
+    (state.settings.get("sta_ssid" + sfx) or "").strip()
+    and (state.settings.get("sta_password" + sfx) or "").strip()
+    for sfx in ("", "_2", "_3")
+):
     if not wifi_mod.switch_to_sta():
         state._sta_fallback = True
         wifi_mod.switch_to_ap()
@@ -683,7 +687,10 @@ while True:
     # Cleared when the user manually holds D2 to stay in AP mode.
     if (state.wifi_mode == config.WIFI_MODE_AP and state._sta_fallback
             and state._sta_auto_retry_count < config._STA_AUTO_RETRY_MAX
-            and (state.settings.get("sta_ssid") or "").strip()):
+            and any(
+                (state.settings.get("sta_ssid" + sfx) or "").strip()
+                for sfx in ("", "_2", "_3")
+            )):
         if (now - state.last_sta_auto_retry) >= config._STA_AUTO_RETRY_INTERVAL:
             state.last_sta_auto_retry = now
             state._sta_auto_retry_count += 1

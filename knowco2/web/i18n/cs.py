@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Oto\u010dit displej (mont\xe1\u017e vzhuru nohama)",
     "help_flip": "Oto\u010d\xed obrazovku o 180\u00b0, aby byla \u010diteln\xe1 p\u0159i mont\xe1\u017ei vzhuru nohama. Tla\u010d\xedtka nejsou dot\u010dena.",
     "aria_flip_check": "P\u0159epnout orientaci displeje",
+    "help_wifi_multi": "Za\u0159\xedzen\xed zkus\xed ka\u017edou s\xed\u0165 postupn\u011b. U\u017eite\u010dn\xe9 pro dom\xe1cnosti s v\xedce routery nebo na cestách.",
     "skip_nav": "P\u0159esko\u010dit na hlavn\xed obsah",
 }

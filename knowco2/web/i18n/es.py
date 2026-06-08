@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Voltear pantalla (montaje invertido)",
     "help_flip": "Gira la pantalla 180\u00b0 para que se lea correctamente cuando se monta al revés. Los botones no se ven afectados.",
     "aria_flip_check": "Cambiar orientación de pantalla",
+    "help_wifi_multi": "El dispositivo prueba cada red en orden. Útil para hogares con varios routers o al viajar.",
     "skip_nav": "Saltar al contenido principal",
 }

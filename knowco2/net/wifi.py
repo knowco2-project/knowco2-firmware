@@ -136,14 +136,20 @@ def switch_to_ap(force_restart=False):
 
 
 def ensure_sta_connected():
-    # Rate-limited: wifi.radio.connect() can block 10-30 s, so only retry
-    # after STA_RECONNECT_COOLDOWN_S has elapsed.
+    # Rate-limited: wifi.radio.connect() can block 10-30 s per attempt, so
+    # only retry after STA_RECONNECT_COOLDOWN_S has elapsed.
+    # Tries all configured networks (up to 3) in order within one cooldown window.
     if wifi is None:
         return False
+
     s = state.settings
-    ssid = (s.get("sta_ssid") or "").strip()
-    pw = (s.get("sta_password") or "").strip()
-    if not ssid or not pw:
+    networks = []
+    for sfx in ("", "_2", "_3"):
+        ssid = (s.get("sta_ssid" + sfx) or "").strip()
+        pw   = (s.get("sta_password" + sfx) or "").strip()
+        if ssid and pw:
+            networks.append((ssid, pw))
+    if not networks:
         return False
 
     try:
@@ -158,22 +164,24 @@ def ensure_sta_connected():
 
     state.last_sta_reconnect_attempt = now_mono
 
-    # Feed watchdog before a potentially long connect().
+    # Feed watchdog before potentially long connect() calls.
     if state._wd is not None:
         try:
             state._wd.feed()
         except Exception:
             pass
 
-    try:
-        runtime.show_status("WiFi: connecting...")
-        wifi.radio.connect(ssid, pw)
-        runtime.show_status("WiFi: connected")
-        return True
-    except Exception as e:
-        log("sta", "STA connect failed:", e, min_interval=10.0)
-        runtime.show_status("WiFi: connect fail")
-        return False
+    for ssid, pw in networks:
+        try:
+            runtime.show_status("WiFi: connecting...")
+            wifi.radio.connect(ssid, pw)
+            runtime.show_status("WiFi: connected")
+            return True
+        except Exception as e:
+            log("sta", "STA connect failed:", ssid, e, min_interval=10.0)
+
+    runtime.show_status("WiFi: connect fail")
+    return False
 
 
 def switch_to_sta():

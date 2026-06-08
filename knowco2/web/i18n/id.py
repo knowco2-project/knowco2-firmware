@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Balik layar (pemasangan terbalik)",
     "help_flip": "Memutar layar 180\u00b0 agar dapat dibaca dengan benar saat dipasang terbalik. Tombol tidak terpengaruh.",
     "aria_flip_check": "Ganti orientasi layar",
+    "help_wifi_multi": "Perangkat mencoba setiap jaringan secara berurutan. Berguna untuk rumah dengan beberapa router atau saat bepergian.",
     "skip_nav": "Lewati ke konten utama",
 }

@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Display omdraaien (ondersteboven montage)",
     "help_flip": "Draait het scherm 180\u00b0 zodat het correct leesbaar is bij omgekeerde montage. Knoppen zijn niet beïnvloed.",
     "aria_flip_check": "Displayoriëntatie omdraaien",
+    "help_wifi_multi": "Het apparaat probeert elk netwerk op volgorde. Handig voor huizen met meerdere routers of onderweg.",
     "skip_nav": "Naar hoofdinhoud",
 }

@@ -56,6 +56,8 @@ def render_settings_page():
     max_points = int(settings.get("max_points", MAX_POINTS_DEFAULT))
     ap_ssid = settings.get("ap_ssid", "knowco2")
     sta_ssid = settings.get("sta_ssid", "")
+    sta_ssid_2 = settings.get("sta_ssid_2", "")
+    sta_ssid_3 = settings.get("sta_ssid_3", "")
     device_id = settings.get("device_id", "co2-node-1")
     # Embed colorblind_mode so the canvas chart uses the same palette as the device.
     web_cb_mode = "true" if settings.get("colorblind_mode", False) else "false"
@@ -352,6 +354,7 @@ def render_settings_page():
       <fieldset>
         <legend data-i18n="sec_wifi">For LAN + cloud uploads</legend>
         <p class="help-text" data-i18n="help_sta">Enter your home Wi-Fi credentials to connect the device to your network.</p>
+        <p class="help-text" data-i18n="help_wifi_multi">The device tries each network in order. Useful for homes with multiple routers or when travelling.</p>
         <label for="field-sta-ssid">
           <span class="lbl" data-i18n="lbl_sta_ssid">Network SSID</span>
           <input id="field-sta-ssid" type="text" name="sta_ssid" maxlength="32"
@@ -363,6 +366,34 @@ def render_settings_page():
           <input id="field-sta-pass" type="password" name="sta_password" maxlength="63" value=""
                  data-i18n-placeholder="ph_sta_pass" placeholder="Your Wi-Fi password">
         </label>
+        <details>
+          <summary style="cursor:pointer;margin-top:0.5rem">Network 2 (optional)</summary>
+          <label for="field-sta-ssid-2">
+            <span class="lbl" data-i18n="lbl_sta_ssid">Network SSID</span>
+            <input id="field-sta-ssid-2" type="text" name="sta_ssid_2" maxlength="32"
+                   data-i18n-placeholder="ph_sta_ssid" placeholder="Your Wi-Fi network name"
+                   value='""" + sta_ssid_2 + """'>
+          </label>
+          <label for="field-sta-pass-2">
+            <span class="lbl" data-i18n="lbl_sta_pass">Network password</span>
+            <input id="field-sta-pass-2" type="password" name="sta_password_2" maxlength="63" value=""
+                   data-i18n-placeholder="ph_sta_pass" placeholder="Your Wi-Fi password">
+          </label>
+        </details>
+        <details>
+          <summary style="cursor:pointer;margin-top:0.5rem">Network 3 (optional)</summary>
+          <label for="field-sta-ssid-3">
+            <span class="lbl" data-i18n="lbl_sta_ssid">Network SSID</span>
+            <input id="field-sta-ssid-3" type="text" name="sta_ssid_3" maxlength="32"
+                   data-i18n-placeholder="ph_sta_ssid" placeholder="Your Wi-Fi network name"
+                   value='""" + sta_ssid_3 + """'>
+          </label>
+          <label for="field-sta-pass-3">
+            <span class="lbl" data-i18n="lbl_sta_pass">Network password</span>
+            <input id="field-sta-pass-3" type="password" name="sta_password_3" maxlength="63" value=""
+                   data-i18n-placeholder="ph_sta_pass" placeholder="Your Wi-Fi password">
+          </label>
+        </details>
         <small class="muted">
           Tip: after saving STA credentials, <b>hold D2 for ~2 seconds</b> to switch into STA mode.
         </small>

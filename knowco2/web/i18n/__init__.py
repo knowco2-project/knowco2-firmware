@@ -31,6 +31,10 @@ LANG_NAMES = {
     "tr": "Türkçe",
     "vi": "Tiếng Việt",
     "id": "Bahasa Indonesia",
+    "hi": "हिन्दी",
+    "bn": "বাংলা",
+    "ta": "தமிழ்",
+    "th": "ภาษาไทย",
     "ja": "日本語",
     "zh": "中文（简体）",
     "ko": "한국어",
@@ -53,12 +57,13 @@ def build_translations_js():
     New languages: add an entry to LANG_NAMES above and create a matching
     <code>.py file next to this file.
     """
-    from . import en, es, fr, de, pt, it, nl, sv, pl, cs, ru, uk, tr, vi, id, ja, zh, ko
+    from . import en, es, fr, de, pt, it, nl, sv, pl, cs, ru, uk, tr, vi, id, hi, bn, ta, th, ja, zh, ko
     parts = []
     for code, mod in (
         ("en", en), ("es", es), ("fr", fr), ("de", de), ("pt", pt),
         ("it", it), ("nl", nl), ("sv", sv), ("pl", pl), ("cs", cs),
         ("ru", ru), ("uk", uk), ("tr", tr), ("vi", vi), ("id", id),
+        ("hi", hi), ("bn", bn), ("ta", ta), ("th", th),
         ("ja", ja), ("zh", zh), ("ko", ko),
     ):
         parts.append('"' + code + '":' + json.dumps(mod.T))

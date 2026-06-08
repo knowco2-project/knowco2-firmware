@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Capovolgi display (montaggio sottosopra)",
     "help_flip": "Ruota lo schermo di 180\u00b0 per leggerlo correttamente montato sottosopra. I pulsanti non sono interessati.",
     "aria_flip_check": "Attiva/disattiva orientamento del display",
+    "help_wifi_multi": "Il dispositivo prova ogni rete in ordine. Utile per case con più router o in viaggio.",
     "skip_nav": "Vai al contenuto principale",
 }
