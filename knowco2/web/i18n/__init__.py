@@ -24,7 +24,13 @@ LANG_NAMES = {
     "it": "Italiano",
     "nl": "Nederlands",
     "sv": "Svenska",
+    "pl": "Polski",
+    "cs": "Čeština",
     "ru": "Русский",
+    "uk": "Українська",
+    "tr": "Türkçe",
+    "vi": "Tiếng Việt",
+    "id": "Bahasa Indonesia",
     "ja": "日本語",
     "zh": "中文（简体）",
     "ko": "한국어",
@@ -47,12 +53,13 @@ def build_translations_js():
     New languages: add an entry to LANG_NAMES above and create a matching
     <code>.py file next to this file.
     """
-    from . import en, es, fr, de, pt, it, nl, sv, ru, ja, zh, ko
+    from . import en, es, fr, de, pt, it, nl, sv, pl, cs, ru, uk, tr, vi, id, ja, zh, ko
     parts = []
     for code, mod in (
         ("en", en), ("es", es), ("fr", fr), ("de", de), ("pt", pt),
-        ("it", it), ("nl", nl), ("sv", sv), ("ru", ru), ("ja", ja),
-        ("zh", zh), ("ko", ko),
+        ("it", it), ("nl", nl), ("sv", sv), ("pl", pl), ("cs", cs),
+        ("ru", ru), ("uk", uk), ("tr", tr), ("vi", vi), ("id", id),
+        ("ja", ja), ("zh", zh), ("ko", ko),
     ):
         parts.append('"' + code + '":' + json.dumps(mod.T))
     return "var T={" + ",".join(parts) + "};"
