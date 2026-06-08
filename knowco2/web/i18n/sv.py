@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Vänd display (upp-och-ned montering)",
     "help_flip": "Roterar skärmen 180\u00b0 så att den läses korrekt vid upp-och-ned montering. Knappar påverkas inte.",
     "aria_flip_check": "Växla displayorientering",
+    "help_wifi_multi": "Enheten provar varje nätverk i tur och ordning. Användbart för hem med flera routrar eller vid resor.",
     "skip_nav": "Hoppa till huvudinnehåll",
 }

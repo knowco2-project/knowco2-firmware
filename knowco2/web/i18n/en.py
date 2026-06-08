@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Flip display (upside-down mount)",
     "help_flip": "Rotates the screen 180\u00b0 so it reads correctly when mounted upside down. Buttons are not affected.",
     "aria_flip_check": "Toggle display orientation flip",
+    "help_wifi_multi": "The device tries each network in order. Useful for homes with multiple routers or when travelling.",
     "skip_nav": "Skip to main content",
 }

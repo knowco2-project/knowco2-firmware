@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Display umdrehen (kopfüber montiert)",
     "help_flip": "Dreht den Bildschirm um 180\u00b0, damit er bei kopfüber montiertem Gerät korrekt lesbar ist. Tasten sind nicht betroffen.",
     "aria_flip_check": "Displayausrichtung umschalten",
+    "help_wifi_multi": "Das Gerät versucht jedes Netzwerk der Reihe nach. Nützlich für Häuser mit mehreren Routern oder beim Reisen.",
     "skip_nav": "Zum Hauptinhalt springen",
 }

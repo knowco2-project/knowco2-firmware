@@ -33,6 +33,10 @@ DEFAULT_SETTINGS = {
 
     "sta_ssid": "",
     "sta_password": "",
+    "sta_ssid_2": "",
+    "sta_password_2": "",
+    "sta_ssid_3": "",
+    "sta_password_3": "",
 
     "device_id": "co2-node-1",
     "temp_mode": "F",
@@ -303,7 +307,10 @@ def update_settings_from_params(params):
     if "admin_pw" in params:
         s["admin_password"] = params["admin_pw"] or ""
 
-    if "lang" in params and params["lang"] in ("en", "es", "fr", "de", "pt", "it", "ja", "zh", "ko"):
+    if "lang" in params and params["lang"] in (
+        "en", "es", "fr", "de", "pt", "it", "nl", "sv", "pl", "cs",
+        "ru", "uk", "tr", "vi", "id", "hi", "bn", "ta", "th", "ja", "zh", "ko",
+    ):
         s["lang"] = params["lang"]
 
     if "ap_ssid" in params and params["ap_ssid"]:
@@ -322,6 +329,14 @@ def update_settings_from_params(params):
         s["sta_ssid"] = params["sta_ssid"]
     if "sta_password" in params and params["sta_password"]:
         s["sta_password"] = params["sta_password"]
+    if "sta_ssid_2" in params:
+        s["sta_ssid_2"] = params["sta_ssid_2"]
+    if "sta_password_2" in params and params["sta_password_2"]:
+        s["sta_password_2"] = params["sta_password_2"]
+    if "sta_ssid_3" in params:
+        s["sta_ssid_3"] = params["sta_ssid_3"]
+    if "sta_password_3" in params and params["sta_password_3"]:
+        s["sta_password_3"] = params["sta_password_3"]
 
     if "temp_mode" in params:
         tm = params["temp_mode"]

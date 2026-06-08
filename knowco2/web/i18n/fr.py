@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Retourner l'écran (montage à l'envers)",
     "help_flip": "Fait pivoter l'écran de 180\u00b0 pour qu'il soit lisible en montage à l'envers. Les boutons ne sont pas affectés.",
     "aria_flip_check": "Basculer l'orientation de l'écran",
+    "help_wifi_multi": "L'appareil essaie chaque réseau dans l'ordre. Utile pour les maisons avec plusieurs routeurs ou en déplacement.",
     "skip_nav": "Aller au contenu principal",
 }

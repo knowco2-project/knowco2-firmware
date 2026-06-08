@@ -87,5 +87,6 @@ T = {
     "lbl_flip": "Inverter display (montagem de cabeça para baixo)",
     "help_flip": "Gira a tela 180\u00b0 para que seja lida corretamente ao montar de cabeça para baixo. Os botões não são afetados.",
     "aria_flip_check": "Alternar orientação do display",
+    "help_wifi_multi": "O dispositivo tenta cada rede em ordem. Útil para casas com vários roteadores ou ao viajar.",
     "skip_nav": "Ir para o conteúdo principal",
 }
