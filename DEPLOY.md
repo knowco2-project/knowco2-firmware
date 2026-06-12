@@ -24,12 +24,17 @@ CIRCUITPY/                 (the board's flash drive)
 └── lib/                   # third-party CircuitPython libraries (.mpy)
     ├── adafruit_scd4x.mpy
     ├── adafruit_scd30.mpy            (only if you use an SCD30)
-    ├── adafruit_stcc4.mpy             (only if you use an STCC4 — `circup install adafruit_stcc4`)
+    ├── adafruit_stcc4.mpy            (only if you use an STCC4 — `circup install adafruit_stcc4`)
     ├── adafruit_max1704x.mpy
     ├── adafruit_minimqtt/            (folder)
     ├── adafruit_requests.mpy
     ├── adafruit_miniqr.mpy
+    ├── adafruit_ticks.mpy    
+    ├── adafruit_ntp.mpy        
     ├── adafruit_display_text/        (folder)
+    ├── adafruit_hashlib/             (folder)    
+    ├── adafruit_httpserver/          (folder)    
+    ├── adafruit_register/            (folder)    
     └── adafruit_connection_manager.mpy   (dependency of requests/minimqtt)
 ```
 

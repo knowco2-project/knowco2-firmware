@@ -5,20 +5,43 @@
 #
 # The STCC4 is a thermal-conductivity CO2 sensor with a paired SHT41 for
 # temperature + humidity (so it reports all three, unlike the Sunrise).
-# Quirks this driver hides from the rest of the firmware:
-#   * reading `.CO2` is what triggers a fresh measurement and refreshes
-#     temperature/humidity — so read() reads CO2 FIRST, then temp/rh;
-#   * there's no `data_ready` flag, so we soft-gate sampling to the
-#     measurement period (5 s normal, 30 s in low power);
-#   * low power = stop continuous + single-shot on demand (the library
-#     auto-triggers a single shot when continuous is off);
+#
+# MODE MODEL (verified against the library source + datasheet):
+#   * The STCC4 has NO low-power *periodic* mode like the SCD41. Its modes
+#     are: continuous (1 Hz), idle, single-shot-from-idle, and a deep
+#     sleep_mode (unused here — wake sequencing isn't worth the complexity
+#     at a 30 s cadence; idle current is already low).
+#   * "Low power" in this driver = Sensirion's recommended single-shot
+#     scheme: stop continuous, then trigger one measurement per LP period.
+#     Reading `.CO2` while continuous is off auto-triggers a single shot
+#     (which blocks ~0.5 s inside the library).
+#
+# CRITICAL QUIRK this driver must defend against:
+#   The library's `.CO2` property decides whether to fire a single shot
+#   based on its INTERNAL `_continuous` flag — not hardware state. In the
+#   library's setter, the flag is only updated AFTER the I2C write
+#   succeeds, and a soft reset() returns the HARDWARE to idle without
+#   touching the flag. Any NAK or reset can therefore desync flag vs.
+#   hardware, after which `.CO2` silently stops triggering measurements
+#   and the sensor appears frozen. _set_continuous() below force-syncs
+#   the flag on every mode change, and _soft_reset_raw() re-syncs it
+#   after a reset. Do not bypass these helpers.
+#
+# Other quirks hidden from the rest of the firmware:
+#   * reading `.CO2` is what refreshes temperature/humidity — read CO2 first;
+#   * there's no data-ready line, so sampling is paced to the period;
+#   * after a stop/mode change we wait a full period before the first
+#     read, so the sensor has settled (an immediate single shot after
+#     STOP can NAK and start the failure counter for no reason);
 #   * no host ASC toggle and no altitude — it compensates by pressure;
-#   * forced recalibration returns 0xFFFF on failure.
+#   * forced recalibration returns 0xFFFF on failure;
+#   * perform_conditioning() exists (improves initial single-shot
+#     accuracy) but BLOCKS ~22 s — longer than the 20 s hardware
+#     watchdog — so it is deliberately NOT called at runtime. Run it
+#     once during pre-ship calibration, before the outdoor FRC.
 #
 # The adafruit_stcc4 import is optional: if the library isn't on the board,
-# detect() simply returns None and the registry moves on. So you can drop
-# this file in now and add `lib/adafruit_stcc4.mpy` whenever you get the
-# hardware — nothing else needs to change.
+# detect() simply returns None and the registry moves on.
 # ----------------------------------------------------------------------
 
 import time
@@ -35,7 +58,7 @@ _FRC_FAILED = 0xFFFF   # forced_recalibration() sentinel for failure
 
 class STCC4Sensor(CO2Sensor):
     model = "STCC4"
-    supports_low_power = True
+    supports_low_power = True      # single-shot emulation (see header)
     normal_period_s = 5.0
     low_power_period_s = 30.0
 
@@ -60,13 +83,32 @@ class STCC4Sensor(CO2Sensor):
             inst = cls(dev)
             inst.model = "STCC4"
             inst.serial = inst._read_serial_raw()
-            dev.continuous_measurement = True      # start 1 s continuous mode
+            inst._set_continuous(True)         # start 1 s continuous mode
             inst._gate = cls.normal_period_s
-            inst._last_read = 0.0
+            # Library setter sleeps 1 s after START, so data exists already;
+            # still wait one period before the first read for a clean sample.
+            inst._last_read = time.monotonic()
             return inst
         except Exception as e:
             print("STCC4 init failed:", e)
             return None
+
+    # ------------------------------------------------------------------
+    # Continuous-mode helper — ALWAYS use this, never set the library
+    # property directly.  It (a) attempts the hardware write, swallowing
+    # a NAK (e.g. STOP while already idle is invalid and NAKs), and
+    # (b) force-syncs the library's internal `_continuous` flag to the
+    # intended state, because the library only updates that flag when the
+    # write succeeds.  Without (b), a single NAK leaves `.CO2` believing
+    # the wrong mode and it stops triggering measurements entirely.
+    # ------------------------------------------------------------------
+    def _set_continuous(self, value):
+        value = bool(value)
+        self._safe(setattr, self.device, "continuous_measurement", value)
+        try:
+            self.device._continuous = value
+        except Exception:
+            pass
 
     # --- data ---
     @property
@@ -76,7 +118,8 @@ class STCC4Sensor(CO2Sensor):
 
     def read(self):
         # IMPORTANT: read CO2 first — that's what refreshes the cached
-        # temperature/humidity inside the library. May raise on a CRC/I2C
+        # temperature/humidity inside the library, and (in LP) triggers the
+        # single-shot measurement (~0.5 s blocking). May raise on a CRC/I2C
         # error, which the caller treats as a failed sample.
         co2 = self.device.CO2
         temp_c = self.device.temperature
@@ -115,21 +158,33 @@ class STCC4Sensor(CO2Sensor):
 
     # --- power / lifecycle primitives (used by base set_low_power/recover) ---
     def _start_normal_raw(self):
-        self.device.continuous_measurement = True
+        self._set_continuous(True)
         self._gate = self.normal_period_s
-        self._last_read = 0.0
+        # Wait one period before the first read (library setter already
+        # slept 1 s for the first sample; this just paces us cleanly).
+        self._last_read = time.monotonic()
         return True
 
     def _start_low_power_raw(self):
         # Low power: leave continuous off. Reading .CO2 then auto-triggers a
         # single-shot measurement, which we pace to low_power_period_s.
-        self._safe(setattr, self.device, "continuous_measurement", False)
+        self._set_continuous(False)
         self._gate = self.low_power_period_s
-        self._last_read = 0.0
+        # CRITICAL: wait a full LP period before the first single shot.
+        # The STOP command needs time to execute; an immediate single shot
+        # can NAK and feed the firmware's failure counter for no reason.
+        self._last_read = time.monotonic()
         return True
 
     def _stop_raw(self):
-        self._safe(setattr, self.device, "continuous_measurement", False)
+        self._set_continuous(False)
 
     def _soft_reset_raw(self):
         self._safe(self.device.reset)
+        # A soft reset returns the HARDWARE to idle but the library flag is
+        # untouched — re-sync it so `.CO2` behaves correctly until the
+        # recover() sequence restarts the intended mode.
+        try:
+            self.device._continuous = False
+        except Exception:
+            pass

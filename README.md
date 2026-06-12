@@ -81,24 +81,25 @@ circup install adafruit_scd4x adafruit_scd30 adafruit_max1704x \
                adafruit_minimqtt adafruit_requests adafruit_ntp \
                adafruit_httpserver adafruit_display_text adafruit_miniqr \
                adafruit_connection_manager adafruit_ticks adafruit_hashlib \
-               adafruit_register
+               adafruit_register adafruit_stcc4
 ```
 
-| Library | Purpose |
-|---|---|
-| `adafruit_scd4x` | SCD40 / SCD41 CO₂ sensor driver |
-| `adafruit_scd30` | SCD30 CO₂ sensor driver |
-| `adafruit_max1704x` | Battery fuel-gauge (MAX17048) |
-| `adafruit_minimqtt` | MQTT client |
-| `adafruit_requests` | HTTP client |
-| `adafruit_ntp` | NTP time sync |
-| `adafruit_httpserver` | Local web portal |
-| `adafruit_display_text` | TFT text rendering |
-| `adafruit_miniqr` | QR code generation |
-| `adafruit_connection_manager` | Socket pool helper |
-| `adafruit_ticks` | Tick/timeout utilities |
-| `adafruit_hashlib` | SHA / HMAC for cloud auth |
-| `adafruit_register` | I²C register helpers |
+| Library                       | Purpose                         |
+|-------------------------------|---------------------------------|
+| `adafruit_scd4x`              | SCD40 / SCD41 CO₂ sensor driver |
+| `adafruit_scd30`              | SCD30 CO₂ sensor driver         |
+| `adafruit_stcc4`              | stcc4 CO₂ sensor driver         |
+| `adafruit_max1704x`           | Battery fuel-gauge (MAX17048)   |
+| `adafruit_minimqtt`           | MQTT client                     |
+| `adafruit_requests`           | HTTP client                     |
+| `adafruit_ntp`                | NTP time sync                   |
+| `adafruit_httpserver`         | Local web portal                |
+| `adafruit_display_text`       | TFT text rendering              |
+| `adafruit_miniqr`             | QR code generation              |
+| `adafruit_connection_manager` | Socket pool helper              |
+| `adafruit_ticks`              | Tick/timeout utilities          |
+| `adafruit_hashlib`            | SHA / HMAC for cloud auth       |
+| `adafruit_register`           | I²C register helpers            |
 
 ---
 
