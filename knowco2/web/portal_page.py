@@ -54,11 +54,22 @@ def render_settings_page():
     checked_alerts = "checked" if settings.get("alerts_enabled", True) else ""
     scale = settings.get("graph_scale_mode", "fixed")
     max_points = int(settings.get("max_points", MAX_POINTS_DEFAULT))
-    ap_ssid = settings.get("ap_ssid", "knowco2")
-    sta_ssid = settings.get("sta_ssid", "")
-    sta_ssid_2 = settings.get("sta_ssid_2", "")
-    sta_ssid_3 = settings.get("sta_ssid_3", "")
-    device_id = settings.get("device_id", "co2-node-1")
+    def esc_attr(val):
+        # Escapes BOTH quote styles: several inputs on this page sit inside
+        # single-quoted value='...' attributes, so an unescaped ' is a
+        # persistent stored-XSS breakout (settable via the same portal).
+        try:
+            return (str(val).replace("&", "&amp;").replace("<", "&lt;")
+                    .replace(">", "&gt;").replace('"', "&quot;")
+                    .replace("'", "&#39;"))
+        except Exception:
+            return ""
+
+    ap_ssid = esc_attr(settings.get("ap_ssid", "knowco2"))
+    sta_ssid = esc_attr(settings.get("sta_ssid", ""))
+    sta_ssid_2 = esc_attr(settings.get("sta_ssid_2", ""))
+    sta_ssid_3 = esc_attr(settings.get("sta_ssid_3", ""))
+    device_id = esc_attr(settings.get("device_id", "co2-node-1"))
     # Embed colorblind_mode so the canvas chart uses the same palette as the device.
     web_cb_mode = "true" if settings.get("colorblind_mode", False) else "false"
 
@@ -67,12 +78,7 @@ def render_settings_page():
     # If no cloud API URL is stored yet, prefill with the default knowco2 API endpoint.
     if not cloud_api:
         cloud_api = "https://api.knowco2.com"
-
-    def esc_attr(val):
-        try:
-            return str(val).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-        except Exception:
-            return ""
+    cloud_api = esc_attr(cloud_api)
 
     # MQTT section
     mqtt_enabled = settings.get("mqtt_enabled", False)

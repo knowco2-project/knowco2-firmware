@@ -80,6 +80,16 @@ def disconnect_sta():
 
 def _invalidate_cloud_session():
     # Force a fresh TLS context/session for the new network context.
+    # Actually CLOSE the managed sockets first — just nulling the Session
+    # reference leaks the pooled TLS socket (LWIP slot + internal-heap
+    # buffers survive until reboot). Local import keeps this module free
+    # of a hard telemetry/requests dependency.
+    try:
+        import adafruit_connection_manager as _acm
+        if state.socket_pool is not None:
+            _acm.connection_manager_close_all(state.socket_pool)
+    except Exception:
+        pass
     state.cloud_session = None
     state.cloud_ctx = None
 

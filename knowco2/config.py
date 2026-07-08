@@ -99,3 +99,33 @@ WIFI_MODE_STA = "sta"
 # ── Button hold thresholds ──────────────────────────────────────────
 D2_HOLD_SECONDS = 2.0
 B_HOLD_SECONDS = 2.0
+
+# ── OTA security ────────────────────────────────────────────────────
+# OTA firmware writes require EITHER the admin password OR a live
+# physical-presence unlock: hold buttons A + B together for
+# OTA_UNLOCK_HOLD_SECONDS to open a window of OTA_UNLOCK_WINDOW_SECONDS.
+OTA_UNLOCK_HOLD_SECONDS = 3.0
+OTA_UNLOCK_WINDOW_SECONDS = 300.0
+
+# ── Safe-mode auto-recovery ─────────────────────────────────────────
+# safemode.py reboots out of safe mode up to RECOVERY_MAX_RETRIES
+# consecutive times; code.py clears the counter after the device has
+# been up for RECOVERY_STABLE_UPTIME_S. NVM bytes used for the counter:
+RECOVERY_MAX_RETRIES = 5
+RECOVERY_STABLE_UPTIME_S = 60
+RECOVERY_NVM_MAGIC_IDX = 0
+RECOVERY_NVM_COUNT_IDX = 1
+
+# ── Cloud TLS memory self-heal ──────────────────────────────────────
+# A TLS handshake on the ESP32-S3 needs several multi-KB contiguous
+# allocations from the ESP-IDF *internal* heap. Below this
+# largest-free-block threshold the handshake would fail — and a failed
+# wrap_socket leaks the raw socket (connection_manager <= 3.1.8) — so
+# we skip the attempt and clean up instead.
+CLOUD_TLS_MIN_LARGEST_BLOCK = 24576   # bytes
+# After this many CONSECUTIVE memory-class cloud failures, hard-reset
+# the MCU (leaked LWIP sockets cannot be reclaimed from Python).
+CLOUD_MEMERR_RESET_AFTER = 5
+# ...but never within this many seconds of boot (reboot-loop guard;
+# safemode.py's NVM retry counter is the second backstop).
+CLOUD_MEMERR_RESET_MIN_UPTIME_S = 600

@@ -37,7 +37,12 @@ def send_all(conn, data, timeout=2.5):
         total += sent
 
 
-def build_response(status_code, content_type, body_bytes=b""):
+def build_response(status_code, content_type, body_bytes=b"", cors=False):
+    """Build an HTTP response. CORS is OPT-IN (cors=True) and reserved for
+    read-only JSON endpoints (/data, /status). State-changing and HTML
+    responses must never carry Access-Control-Allow-Origin: * — a wildcard
+    there lets any web page the owner visits script the portal cross-origin
+    (drive-by settings/OTA abuse)."""
     reason = {200: "OK", 204: "No Content", 302: "Found",
               404: "Not Found", 405: "Method Not Allowed"}.get(status_code, "OK")
     headers = (
@@ -46,7 +51,7 @@ def build_response(status_code, content_type, body_bytes=b""):
         "Cache-Control: no-store\r\n" +
         "Pragma: no-cache\r\n" +
         "Connection: close\r\n" +
-        "Access-Control-Allow-Origin: *\r\n" +
+        ("Access-Control-Allow-Origin: *\r\n" if cors else "") +
         "X-Content-Type-Options: nosniff\r\n" +
         "X-Frame-Options: SAMEORIGIN\r\n" +
         "Referrer-Policy: no-referrer\r\n"
@@ -57,9 +62,9 @@ def build_response(status_code, content_type, body_bytes=b""):
     return headers.encode("utf-8"), body_bytes
 
 
-def make_json_response(obj, status=200):
+def make_json_response(obj, status=200, cors=False):
     body = json.dumps(obj).encode("utf-8")
-    return build_response(status, "application/json; charset=utf-8", body)
+    return build_response(status, "application/json; charset=utf-8", body, cors=cors)
 
 
 def make_html_response(html_str, status=200):

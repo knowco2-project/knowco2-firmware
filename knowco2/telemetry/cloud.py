@@ -5,6 +5,32 @@
 #     to avoid "Out of sockets" on the ESP32-S3's small socket pool
 #   * signs each post: base64(HMAC_SHA256(secret, f"{ts}.{body}"))
 #   * headers: x-kc2-device-id / x-kc2-ts / x-kc2-sig
+#
+# TLS MEMORY SELF-HEAL (RC-48)
+# ----------------------------
+# On the ESP32-S3, TLS handshakes are serviced by mbedTLS out of the
+# ESP-IDF *internal* SRAM heap — NOT the CircuitPython gc heap (which
+# lives in PSRAM). When internal heap runs short, socket/TLS creation
+# raises a bare MemoryError() even though gc.mem_free() looks huge.
+#
+# Worse, adafruit_connection_manager (<= 3.1.8) creates the raw TCP
+# socket *before* ssl_context.wrap_socket(); if wrap_socket raises
+# MemoryError the raw socket is leaked — it is neither closed nor
+# tracked, so the manager's own free/retry logic can never reclaim it.
+# Each retry then leaks another LWIP socket + its internal-heap buffers,
+# and cloud upload becomes permanently broken until reboot.
+#
+# Mitigations, in order:
+#   1. Pre-flight: skip the TLS attempt when the internal heap's largest
+#      free block is below CLOUD_TLS_MIN_LARGEST_BLOCK (handshake would
+#      fail anyway, and a failed handshake *leaks*).
+#   2. On MemoryError / RuntimeError: tear the session down via
+#      connection_manager_close_all() + gc.collect() so every socket the
+#      manager DOES track is closed and the next attempt starts clean.
+#   3. Last resort: after CLOUD_MEMERR_RESET_AFTER consecutive
+#      memory-class failures (and a minimum uptime guard), hard-reset the
+#      MCU — mirrors the sensor hard-reset policy. Leaked sockets cannot
+#      be reclaimed from Python; a reboot is the only full recovery.
 # ----------------------------------------------------------------------
 
 import gc
@@ -29,6 +55,77 @@ except Exception as e:
     ssl = None
     adafruit_requests = None
     print("cloud deps IMPORT FAILED:", e)
+
+try:
+    import adafruit_connection_manager
+except Exception:
+    adafruit_connection_manager = None
+
+try:
+    import espidf  # internal (ESP-IDF) heap introspection; espressif-only
+except Exception:
+    espidf = None
+
+try:
+    import microcontroller
+except Exception:
+    microcontroller = None
+
+
+def idf_heap_info():
+    """Return (free_bytes, largest_free_block) of the ESP-IDF internal
+    heap, or (None, None) when unavailable. This is the heap mbedTLS
+    allocates from; gc.mem_free() (PSRAM) says nothing about it."""
+    if espidf is None:
+        return (None, None)
+    try:
+        return (espidf.heap_caps_get_free_size(),
+                espidf.heap_caps_get_largest_free_block())
+    except Exception:
+        return (None, None)
+
+
+def teardown_session(reason=""):
+    """Close every socket the connection manager tracks for our pool and
+    drop the cached Session/SSLContext so the next send rebuilds from
+    scratch. Safe to call any time; never raises."""
+    if adafruit_connection_manager is not None and state.socket_pool is not None:
+        try:
+            adafruit_connection_manager.connection_manager_close_all(state.socket_pool)
+        except Exception:
+            pass
+    state.cloud_session = None
+    state.cloud_ctx = None
+    try:
+        gc.collect()
+    except Exception:
+        pass
+    if reason:
+        log("cloud", "TLS session torn down:", reason, min_interval=0.0)
+
+
+def _maybe_memerr_reset():
+    """Hard-reset the MCU after repeated memory-class cloud failures.
+    Bounded: requires CLOUD_MEMERR_RESET_MIN_UPTIME_S of uptime so a
+    persistent fault cannot become a reboot loop (safemode.py's NVM
+    counter is the second backstop)."""
+    if state.cloud_consec_memerr < config.CLOUD_MEMERR_RESET_AFTER:
+        return
+    if microcontroller is None:
+        return
+    try:
+        if (time.monotonic() - state.boot_time_mono) < config.CLOUD_MEMERR_RESET_MIN_UPTIME_S:
+            return
+    except Exception:
+        return
+    log("cloud", "persistent TLS MemoryError x%d — hard reset"
+        % state.cloud_consec_memerr, min_interval=0.0)
+    runtime.show_status("Cloud: mem reset")
+    time.sleep(0.5)
+    try:
+        microcontroller.reset()
+    except Exception:
+        pass
 
 
 def _get_session():
@@ -80,6 +177,21 @@ def cloud_send(payload_dict):
         runtime.show_status("Cloud: bad token")
         return False
 
+    # Pre-flight: refuse to start a TLS handshake the internal heap cannot
+    # service — a failed wrap_socket LEAKS the underlying raw socket
+    # (adafruit_connection_manager <= 3.1.8), making things strictly worse.
+    idf_free, idf_big = idf_heap_info()
+    state.idf_free = idf_free
+    state.idf_largest_block = idf_big
+    if idf_big is not None and idf_big < config.CLOUD_TLS_MIN_LARGEST_BLOCK:
+        state.cloud_last_http = None
+        state.cloud_last_error = "IDF heap low (largest free block %d B)" % idf_big
+        state.cloud_consec_memerr += 1
+        log("cloud", "skipping TLS: internal heap low", idf_free, idf_big, min_interval=5.0)
+        teardown_session("internal heap low")
+        _maybe_memerr_reset()
+        return False
+
     ts = int(time.time())
     state.cloud_last_attempt_ts = ts
 
@@ -127,6 +239,7 @@ def cloud_send(payload_dict):
         code = int(r.status_code)
         state.cloud_last_http = code
         state.cloud_last_error = ""
+        state.cloud_consec_memerr = 0
 
         if code == 200:
             return True
@@ -138,6 +251,21 @@ def cloud_send(payload_dict):
             return False
 
         runtime.show_status("Cloud HTTP %d" % code)
+        return False
+
+    except (MemoryError, RuntimeError) as e:
+        # MemoryError: ESP-IDF internal heap could not service the
+        # socket/TLS allocation (raised as a bare MemoryError()).
+        # RuntimeError: typically "Out of sockets" from the pool.
+        # Both are memory-class faults: tear down + count toward reset.
+        state.cloud_last_http = None
+        state.cloud_last_error = repr(e)
+        state.cloud_consec_memerr += 1
+        log("cloud", "cloud_send mem-class error:", e,
+            "(consecutive: %d)" % state.cloud_consec_memerr, min_interval=2.0)
+        runtime.show_status("Cloud: mem fail")
+        teardown_session(repr(e))
+        _maybe_memerr_reset()
         return False
 
     except Exception as e:

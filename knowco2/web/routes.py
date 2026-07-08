@@ -15,6 +15,7 @@ import time
 import gc
 
 from .. import state, config, version, runtime
+from .. import crypto
 from .. import settings as settings_mod
 from ..net import wifi as wifi_mod
 from ..helpers import log, as_int, clamp_int
@@ -38,6 +39,34 @@ except Exception:
     microcontroller = None
 
 SETTINGS_FILE = config.SETTINGS_FILE
+
+
+# ── Auth helpers ─────────────────────────────────────────────────────
+def check_admin_password(provided):
+    """Constant-time check of `provided` against the configured admin
+    password. Returns False when no admin password is set."""
+    admin_pw = state.settings.get("admin_password", "") or ""
+    if not admin_pw:
+        return False
+    return crypto.constant_time_equals(provided or "", admin_pw)
+
+
+def ota_unlock_active():
+    """True while the physical-presence OTA window (A+C hold) is open."""
+    try:
+        return bool(state.ota_unlock_until) and \
+            time.monotonic() < state.ota_unlock_until
+    except Exception:
+        return False
+
+
+def ota_authorized(params):
+    """OTA writes require the admin password (when set) OR a live
+    physical-presence unlock — NEVER neither. An empty admin password no
+    longer means open OTA."""
+    if check_admin_password(params.get("pw", "")):
+        return True
+    return ota_unlock_active()
 
 
 # ----------------------------------------------------------------------
@@ -81,7 +110,7 @@ def handle_data_route(conn):
             iv = as_int(v)
             if iv is not None:
                 ints.append(iv)
-    header, body = make_json_response({"co2": ints})
+    header, body = make_json_response({"co2": ints}, cors=True)
     send_all(conn, header)
     send_all(conn, body)
 
@@ -162,6 +191,7 @@ def handle_status_route(conn):
 
         "wifi_mode": state.wifi_mode,
         "fs_readonly": state.fs_readonly,
+        "safe_mode_recoveries": state.safe_mode_recoveries,
         "ip": state.ip_str_cached,
         "mdns": (state.mdns_hostname + ".local") if (state.wifi_mode == config.WIFI_MODE_STA and state.mdns_hostname) else None,
 
@@ -171,8 +201,20 @@ def handle_status_route(conn):
         "cloud_last_attempt_ts": state.cloud_last_attempt_ts,
         "cloud_last_http": state.cloud_last_http,
         "cloud_last_error": state.cloud_last_error,
+        "cloud_failures": state.cloud_failures,
+        "cloud_consec_memerr": state.cloud_consec_memerr,
         "rate_of_change": state.rate_of_change,
     }
+
+    # ESP-IDF internal heap (what TLS/mbedTLS allocates from) — sampled
+    # live so /status is useful even before the first cloud attempt.
+    try:
+        from ..telemetry import cloud as _cloud_mod
+        _idf_free, _idf_big = _cloud_mod.idf_heap_info()
+        payload["idf_free"] = _idf_free
+        payload["idf_largest_block"] = _idf_big
+    except Exception:
+        pass
 
     payload["energy_mode"] = state.energy_mode
     payload["scd_period_effective"] = state._scd_period_effective
@@ -208,7 +250,7 @@ def handle_status_route(conn):
     except Exception:
         pass
 
-    header, body = make_json_response(payload)
+    header, body = make_json_response(payload, cors=True)
     send_all(conn, header)
     send_all(conn, body)
 
@@ -314,7 +356,7 @@ def handle_calibration_route(conn, params):
     _admin_pw = s.get("admin_password", "")
     if _has_write_op and _admin_pw:
         _provided = params.get("pw", "")
-        if _provided != _admin_pw:
+        if not crypto.constant_time_equals(_provided or "", _admin_pw):
             _login_html = """<!DOCTYPE html>
 <html><head><meta charset='utf-8'><title>Calibration - Login</title>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
@@ -416,7 +458,7 @@ def _zip_safe_path(name):
     if name.startswith("__MACOSX/") or name.startswith("."):
         return None
     top = name.split("/")[0]
-    if top in ("code.py", "boot.py"):
+    if top in ("code.py", "boot.py", "safemode.py"):
         return name if "/" not in name else None
     if top in ("lib", "assets", "knowco2"):
         return name
@@ -425,11 +467,15 @@ def _zip_safe_path(name):
 
 def _zip_ensure_dir(path):
     parts = path.split("/")
+    absolute = path.startswith("/")
     current = ""
     for part in parts[:-1]:
         if not part:
             continue
-        current = (current + "/" + part) if current else part
+        if current:
+            current = current + "/" + part
+        else:
+            current = ("/" + part) if absolute else part
         try:
             import os as _e_os
             _e_os.mkdir(current)
@@ -480,6 +526,7 @@ def _parse_zip_entries(zip_path):
             if _u32(cd_data, pos) != 0x02014b50:
                 break
             method = _u16(cd_data, pos + 10)
+            crc32 = _u32(cd_data, pos + 16)
             comp_size = _u32(cd_data, pos + 20)
             uncomp_size = _u32(cd_data, pos + 24)
             name_len = _u16(cd_data, pos + 28)
@@ -502,20 +549,42 @@ def _parse_zip_entries(zip_path):
                 "comp_size": comp_size,
                 "uncomp_size": uncomp_size,
                 "method": method,
+                "crc": crc32,
             })
         return entries, None
     except Exception as e:
         return None, "ZIP parse error: " + str(e)
 
 
+def _wd_feed():
+    """Feed the hardware watchdog; safe no-op when absent."""
+    try:
+        if state._wd is not None:
+            state._wd.feed()
+    except Exception:
+        pass
+
+
 def _extract_zip_entry_to_file(zip_path, entry, dest_path):
     """Extract one STORED/DEFLATE entry to dest_path. Returns (ok, message).
-    Local-header fields are read by direct byte indexing (no struct.unpack_from)."""
+    Local-header fields are read by direct byte indexing (no struct.unpack_from).
+
+    RC-48v2: feeds the watchdog on BOTH paths (the DEFLATE branch previously
+    never fed it — a WDT reset mid-write truncated files in place), and
+    verifies the written bytes against the central-directory CRC-32 so a
+    silently corrupt write can never be installed."""
     import gc as _gc
+    try:
+        import binascii as _ba
+        _crc32 = _ba.crc32
+    except Exception:
+        _crc32 = None
+
     method = entry["method"]
     local_off = entry["local_off"]
     comp_size = entry["comp_size"]
     uncomp_size = entry["uncomp_size"]
+    want_crc = entry.get("crc")
 
     LFH_SZ = 30
 
@@ -536,6 +605,7 @@ def _extract_zip_entry_to_file(zip_path, entry, dest_path):
 
             _zip_ensure_dir(dest_path)
 
+            got_crc = 0
             if method == 0:  # STORED
                 written = 0
                 with open(dest_path, "wb") as df:
@@ -544,29 +614,59 @@ def _extract_zip_entry_to_file(zip_path, entry, dest_path):
                         if not chunk:
                             return False, "Premature end of STORED data at byte %d" % written
                         df.write(chunk)
+                        if _crc32 is not None:
+                            got_crc = _crc32(chunk, got_crc)
                         written += len(chunk)
-                        try:
-                            if state._wd is not None:
-                                state._wd.feed()
-                        except Exception:
-                            pass
+                        _wd_feed()
 
             elif method == 8:  # DEFLATE
                 import zlib as _zlib
                 _gc.collect()
+                _wd_feed()
                 compressed = zf.read(comp_size)
                 if len(compressed) < comp_size:
                     return False, "Premature end of DEFLATE data"
+                _wd_feed()
                 try:
                     decompressed = _zlib.decompress(compressed, -15)
                 except Exception as ze:
                     return False, "Decompression failed: " + str(ze)
                 del compressed
                 _gc.collect()
+                if len(decompressed) != uncomp_size:
+                    return False, ("Size mismatch: expected %d, got %d"
+                                   % (uncomp_size, len(decompressed)))
+                if _crc32 is not None:
+                    got_crc = _crc32(decompressed)
+                _wd_feed()
                 with open(dest_path, "wb") as df:
                     df.write(decompressed)
                 del decompressed
                 _gc.collect()
+                _wd_feed()
+
+        # Verify what actually landed on flash, not just what we computed
+        # in RAM: re-read + CRC the file (512 B chunks, watchdog fed).
+        if _crc32 is not None and want_crc is not None:
+            got_crc &= 0xFFFFFFFF
+            if got_crc != want_crc:
+                return False, ("CRC mismatch in stream (want %08x got %08x)"
+                               % (want_crc, got_crc))
+            file_crc = 0
+            size_on_disk = 0
+            with open(dest_path, "rb") as vf:
+                while True:
+                    chunk = vf.read(512)
+                    if not chunk:
+                        break
+                    file_crc = _crc32(chunk, file_crc)
+                    size_on_disk += len(chunk)
+                    _wd_feed()
+            file_crc &= 0xFFFFFFFF
+            if size_on_disk != uncomp_size or file_crc != want_crc:
+                return False, ("CRC/size mismatch on flash (want %08x/%d "
+                               "got %08x/%d)" % (want_crc, uncomp_size,
+                                                 file_crc, size_on_disk))
 
         return True, "OK"
     except Exception as e:
@@ -616,67 +716,108 @@ def _process_zip_update(conn, zip_path):
     except Exception:
         pass
 
-    code_tmp = "/code.py.ota"
-    has_code = any(dest == "code.py" for dest, _ in safe)
-    if has_code:
-        code_entry = next(e for d, e in safe if d == "code.py")
-        ok, msg = _extract_zip_entry_to_file(zip_path, code_entry, code_tmp)
-        if not ok:
-            try: _oz.remove(zip_path)
-            except Exception: pass
-            try: _oz.remove(code_tmp)
-            except Exception: pass
-            _send_ota_result(conn, False, "Failed to extract code.py: " + msg)
-            return
+    # ------------------------------------------------------------------
+    # RC-48v2 TRANSACTIONAL INSTALL
+    # ------------------------------------------------------------------
+    # The previous flow extracted every file IN PLACE and treated per-file
+    # failures as mere warnings before rebooting. Any interruption
+    # (watchdog reset, MemoryError, power blip) left a truncated file —
+    # e.g. a half-written helpers.py → "ImportError: can't import name
+    # log" at every subsequent boot, with the web server dead so OTA
+    # itself is unreachable.
+    #
+    # New flow: PHASE 1 extracts everything to /ota_staged/ and verifies
+    # each file's CRC-32 against the ZIP central directory. ANY failure
+    # aborts with the live firmware untouched. PHASE 2 commits by
+    # renaming staged files into place — renames are milliseconds each
+    # and can never yield a truncated file, so the vulnerable window
+    # shrinks from the whole extraction to a few dozen fast renames.
+    # ------------------------------------------------------------------
+    STAGE_ROOT = "/ota_staged"
+
+    def _rmtree(path):
         try:
-            with open(code_tmp, "rb") as _f:
+            for name in _oz.listdir(path):
+                child = path + "/" + name
+                try:
+                    if _oz.stat(child)[0] & 0x4000:  # S_IFDIR
+                        _rmtree(child)
+                    else:
+                        _oz.remove(child)
+                except Exception:
+                    pass
+            _oz.rmdir(path)
+        except Exception:
+            pass
+
+    def _abort(msg):
+        _rmtree(STAGE_ROOT)
+        try: _oz.remove(zip_path)
+        except Exception: pass
+        _send_ota_result(conn, False, msg + " Nothing was changed.")
+
+    _rmtree(STAGE_ROOT)  # clear leftovers from any earlier interrupted OTA
+
+    # ---- PHASE 1: extract + CRC-verify everything into staging --------
+    staged = []  # (final_dest, staged_path)
+    for dest, e in safe:
+        staged_path = STAGE_ROOT + "/" + dest
+        ok, msg = _extract_zip_entry_to_file(zip_path, e, staged_path)
+        _wd_feed()
+        _gcz.collect()
+        if not ok:
+            _abort("OTA aborted at %s: %s." % (dest, msg))
+            return
+        staged.append((dest, staged_path))
+
+    # code.py sanity check runs against the staged copy.
+    has_code = any(d == "code.py" for d, _ in staged)
+    if has_code:
+        try:
+            with open(STAGE_ROOT + "/code.py", "rb") as _f:
                 _head = _f.read(64).lstrip(b"\xef\xbb\xbf")
             _valid = (_head.startswith(b"#") or _head.startswith(b"import ") or
                       _head.startswith(b"from ") or _head.startswith(b"\n#") or
                       _head.startswith(b"\r\n#"))
             if not _valid:
-                try: _oz.remove(zip_path)
-                except Exception: pass
-                try: _oz.remove(code_tmp)
-                except Exception: pass
-                _send_ota_result(conn, False,
-                    "code.py in ZIP does not look like Python source "
-                    "(first bytes: %r). Aborting - nothing was changed." % _head[:16])
+                _abort("code.py in ZIP does not look like Python source "
+                       "(first bytes: %r)." % _head[:16])
                 return
         except Exception as ce:
-            _send_ota_result(conn, False, "Cannot verify code.py: " + str(ce))
+            _abort("Cannot verify staged code.py: " + str(ce))
             return
 
+    # ---- PHASE 2: commit — fast per-file renames into place ------------
     installed = []
-    errors = []
-    for dest, e in safe:
-        if dest == "code.py":
-            continue
-        ok, msg = _extract_zip_entry_to_file(zip_path, e, dest)
-        if ok:
-            installed.append(dest)
-        else:
-            errors.append("%s: %s" % (dest, msg))
-        _gcz.collect()
-
-    if has_code:
+    for dest, staged_path in staged:
+        _wd_feed()
         try:
-            try: _oz.remove("/code.py.bak")
-            except Exception: pass
-            try: _oz.rename("/code.py", "/code.py.bak")
-            except Exception: pass
-            _oz.rename(code_tmp, "/code.py")
-            installed.append("code.py")
+            if dest == "code.py":
+                # Keep the rollback copy of the previous main script.
+                try: _oz.remove("/code.py.bak")
+                except Exception: pass
+                try: _oz.rename("/code.py", "/code.py.bak")
+                except Exception: pass
+            else:
+                try: _oz.remove("/" + dest)
+                except Exception: pass
+            _zip_ensure_dir("/" + dest)
+            _oz.rename(staged_path, "/" + dest)
+            installed.append(dest)
         except Exception as re_err:
-            _send_ota_result(conn, False, "Failed to install code.py: " + str(re_err))
+            # Mid-commit failure: files are a mix of old and new, but every
+            # file is COMPLETE (renames don't truncate). Report precisely.
+            _send_ota_result(conn, False,
+                "Commit failed at %s after installing %d/%d files: %s. "
+                "Re-run this OTA to finish (idempotent)." %
+                (dest, len(installed), len(staged), str(re_err)))
             return
 
+    _rmtree(STAGE_ROOT)
     try: _oz.remove(zip_path)
     except Exception: pass
 
-    summary = "Installed (%d files): %s." % (len(installed), ", ".join(installed))
-    if errors:
-        summary += " Warnings: " + "; ".join(errors) + "."
+    summary = "Installed and CRC-verified %d files." % len(installed)
     if skipped:
         summary += " Skipped (outside allowed paths): " + ", ".join(skipped[:4]) + "."
 
@@ -695,28 +836,50 @@ def _process_zip_update(conn, zip_path):
 
 
 def handle_update_route(conn, params, method=b"GET", raw_headers=b""):
-    """OTA firmware update. GET shows the form; POST installs a .py or .zip."""
+    """OTA firmware update. GET shows the form; POST installs a .py or .zip.
+
+    SECURITY: every OTA operation (file upload, URL download, ZIP) requires
+    either the admin password (constant-time compared) or a live
+    physical-presence unlock (hold buttons A + B for 3 s → 5-minute window).
+    A device with no admin password set is NOT open — physical presence is
+    then the only way in."""
     s = state.settings
-    admin_pw = s.get("admin_password", "")
-    if admin_pw:
-        provided_pw = params.get("pw", "")
-        if provided_pw != admin_pw:
-            login_html = """<!DOCTYPE html>
-<html><head><meta charset='utf-8'><title>OTA Update - Login</title>
+    if not ota_authorized(params):
+        admin_pw_set = bool(s.get("admin_password", "") or "")
+        if method == b"POST":
+            # Never stream/accept a body from an unauthorized client.
+            _send_ota_result(conn, False,
+                "Unauthorized: OTA is locked. Hold buttons A + B on the "
+                "device for 3 seconds to unlock for 5 minutes"
+                + (", or supply the admin password." if admin_pw_set else "."))
+            return
+        pw_form = ""
+        if admin_pw_set:
+            pw_form = """<form method='POST' action='/update'>
+<label>Password<br><input type='password' name='pw'></label><br>
+<button type='submit'>Unlock</button></form>
+<p style='color:#aaa'>or</p>"""
+        login_html = """<!DOCTYPE html>
+<html><head><meta charset='utf-8'><title>OTA Update - Locked</title>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
 <style>body{font-family:sans-serif;background:#0b0b0b;color:#eee;margin:0}
 .wrap{max-width:480px;margin:0 auto;padding:16px;text-align:center}
 input{padding:6px;border-radius:4px;border:1px solid #444;background:#111;color:#eee;font-size:14px;width:80%;max-width:260px}
 button{margin-top:16px;padding:8px 16px;border-radius:4px;border:1px solid #00bcd4;background:#00bcd4;color:#000;font-weight:600;cursor:pointer}
+.hint{margin-top:20px;padding:12px;border:1px solid #333;border-radius:6px;background:#151515;text-align:left}
 </style></head><body><div class='wrap'>
-<h1>Know CO&#8322; OTA</h1><p>Enter settings password:</p>
-<form method='POST' action='/update'>
-<label>Password<br><input type='password' name='pw'></label><br>
-<button type='submit'>Unlock</button></form></div></body></html>"""
-            header, body = make_html_response(login_html)
-            send_all(conn, header)
-            send_all(conn, body)
-            return
+<h1>Know CO&#8322; OTA</h1><p>Firmware updates are locked.</p>
+""" + pw_form + """
+<div class='hint'><strong>Physical unlock:</strong> hold buttons
+<strong>A</strong> and <strong>B</strong> on the device together for
+3&nbsp;seconds. The screen will show &ldquo;OTA unlocked&rdquo; and this page
+will accept updates for 5&nbsp;minutes. Then reload this page.</div>
+<p><a href='/' style='color:#00bcd4;'>Back to settings</a></p>
+</div></body></html>"""
+        header, body = make_html_response(login_html)
+        send_all(conn, header)
+        send_all(conn, body)
+        return
 
     # --- FILE UPLOAD: POST with ?upload=1, raw binary body ---
     if method == b"POST" and params.get("upload") == "1":
@@ -903,8 +1066,17 @@ button{margin-top:16px;padding:8px 16px;border-radius:4px;border:1px solid #00bc
         return
 
     # --- GET: show the combined update form ---
-    pw_val = params.get("pw", "")
-    pw_field = ("<input type='hidden' name='pw' value='%s'>" % pw_val) if pw_val else ""
+    _pw_raw = params.get("pw", "")
+    # The password lands in two different contexts, each with its own
+    # escaping: a single-quoted HTML attribute (entity-escape) and a
+    # single-quoted JS string inside <script> (backslash-escape; entities
+    # are NOT decoded there).
+    pw_attr = (_pw_raw.replace("&", "&amp;").replace("<", "&lt;")
+               .replace(">", "&gt;").replace('"', "&quot;")
+               .replace("'", "&#39;"))
+    pw_js = (_pw_raw.replace("\\", "\\\\").replace("'", "\\'")
+             .replace("<", "\\x3c").replace(">", "\\x3e"))
+    pw_field = ("<input type='hidden' name='pw' value='%s'>" % pw_attr) if _pw_raw else ""
     form_html = """<!DOCTYPE html>
 <html><head><meta charset='utf-8'><title>Know CO2 - OTA Update</title>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
@@ -963,7 +1135,7 @@ Any file outside those paths is safely ignored.<br>
 </div>
 <script>
 var _file = null;
-var _pw = '""" + pw_val + """';
+var _pw = '""" + pw_js + """';
 var dz = document.getElementById('drop-zone');
 var fi = document.getElementById('fw-file-input');
 var ub = document.getElementById('upload-btn');
@@ -1017,6 +1189,12 @@ function doUpload(){
 
 
 def _send_ota_result(conn, success, message):
+    # Escape: the message can echo bytes from an uploaded file.
+    try:
+        message = (str(message).replace("&", "&amp;")
+                   .replace("<", "&lt;").replace(">", "&gt;"))
+    except Exception:
+        message = "OTA result"
     color = "#4caf50" if success else "#e53935"
     icon = "&#10003;" if success else "&#10007;"
     html = """<!DOCTYPE html><html><head><meta charset='utf-8'><title>OTA Result</title>
@@ -1040,7 +1218,7 @@ def handle_root_route(conn, params):
         admin_pw = ""
     if admin_pw:
         provided_pw = params.get("pw")
-        if not provided_pw or provided_pw != admin_pw:
+        if not provided_pw or not crypto.constant_time_equals(provided_pw, admin_pw):
             login_html = """<!DOCTYPE html>
 <html>
 <head>

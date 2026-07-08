@@ -20,6 +20,30 @@ except Exception:
         hashlib = None
 
 
+def constant_time_equals(a, b):
+    """Constant-time equality for passwords/tokens (str or bytes).
+    Uses hmac.compare_digest when available; otherwise a manual
+    XOR-accumulate compare. Only the length can leak via timing."""
+    try:
+        if isinstance(a, str):
+            a = a.encode("utf-8")
+        if isinstance(b, str):
+            b = b.encode("utf-8")
+    except Exception:
+        return False
+    if _HAS_HMAC and hasattr(hmac, "compare_digest"):
+        try:
+            return hmac.compare_digest(a, b)
+        except Exception:
+            pass
+    if len(a) != len(b):
+        return False
+    r = 0
+    for x, y in zip(a, b):
+        r |= x ^ y
+    return r == 0
+
+
 def b64encode_bytes(raw):
     try:
         import base64

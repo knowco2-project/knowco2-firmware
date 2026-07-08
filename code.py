@@ -234,6 +234,11 @@ ids.init_ids()
 ids.init_pair_code()
 ids.init_mdns_hostname()
 
+# Safe-mode auto-recovery: install/refresh /safemode.py and record how many
+# consecutive safe-mode recoveries preceded this boot (diagnostics in /status).
+from knowco2 import recovery
+recovery.init()
+
 # DHCP hostname so the device shows as "knowco2-xxxx" on the network.
 if wifi is not None and state.mdns_hostname:
     try:
@@ -354,6 +359,13 @@ while True:
             pass
     now = time.monotonic()
 
+    # After RECOVERY_STABLE_UPTIME_S of healthy uptime, clear the safe-mode
+    # retry counter so future faults get a fresh set of auto-recoveries.
+    if (not state._recovery_cleared) and \
+       (now - state.boot_time_mono) >= config.RECOVERY_STABLE_UPTIME_S:
+        state._recovery_cleared = True
+        recovery.clear_counter()
+
 
     if state.fs_readonly and not state.fs_warned:
         state.fs_warned = True
@@ -366,6 +378,32 @@ while True:
     a_now = read_a()
     b_now = read_b()
     c_now = read_c()
+
+    # A + B held together — physical-presence OTA unlock.
+    # Runs BEFORE the individual A/B handlers so the combo suppresses their
+    # hold actions (low-power toggle, regulatory screen) and their short
+    # presses. A (D0) and B (D1) are physically adjacent, and neither of
+    # their actions touches Wi-Fi — so C's Wi-Fi toggle can't be triggered
+    # by this gesture.
+    _ab_now = a_now and b_now
+    if _ab_now:
+        if state._ab_hold_start is None:
+            state._ab_hold_start = now
+            state._ab_hold_fired = False
+        # Suppress single-button hold + short-press actions while combo held.
+        state._btn_a_hold_fired = True
+        state._btn_b_hold_fired = True
+        if (not state._ab_hold_fired) and \
+           ((now - state._ab_hold_start) >= config.OTA_UNLOCK_HOLD_SECONDS):
+            state._ab_hold_fired = True
+            state.ota_unlock_until = now + config.OTA_UNLOCK_WINDOW_SECONDS
+            ui.show_status("OTA unlocked for %d min" %
+                           int(config.OTA_UNLOCK_WINDOW_SECONDS // 60))
+    else:
+        # Reset whenever the combo isn't fully held → requires a clean,
+        # continuous 3-second A+B hold.
+        state._ab_hold_start = None
+        state._ab_hold_fired = False
 
     # D0 (A) — short press toggles °C/°F  |  hold 2 s → toggle LP mode.
     # This mirrors button C (D2) which also uses short/long-press patterns.

@@ -94,6 +94,18 @@ prev_b = False
 prev_c = False
 d2_hold_start = None
 d2_hold_fired = False
+
+# A+B combo hold → physical-presence OTA unlock window.
+# ota_unlock_until is a time.monotonic() deadline; 0.0 means locked.
+ota_unlock_until = 0.0
+_ab_hold_start = None
+_ab_hold_fired = False
+
+# ── Safe-mode recovery diagnostics ──────────────────────────────────
+# Consecutive safemode.py auto-recoveries that preceded this boot
+# (0 = clean boot). Counter cleared after stable uptime.
+safe_mode_recoveries = 0
+_recovery_cleared = False
 _btn_a_hold_start = None
 _btn_a_hold_fired = False
 _btn_b_hold_start = None
@@ -167,6 +179,16 @@ cloud_last_attempt_ts = 0
 # Invalidated by Wi-Fi mode switches so a fresh one is built per network.
 cloud_session = None
 cloud_ctx = None
+
+# ── Cloud TLS memory self-heal (RC-48) ──────────────────────────────
+# Consecutive memory-class cloud failures (MemoryError / "Out of
+# sockets" / pre-flight low-heap skip). Reset to 0 on any successful
+# POST; drives the bounded hard-reset in telemetry.cloud.
+cloud_consec_memerr = 0
+# Last-observed ESP-IDF *internal* heap stats (bytes) — the heap mbedTLS
+# uses for TLS; independent of gc.mem_free() (PSRAM). None = unknown.
+idf_free = None
+idf_largest_block = None
 
 # ── MQTT / Adafruit IO timing ───────────────────────────────────────
 last_mqtt_send = 0.0
