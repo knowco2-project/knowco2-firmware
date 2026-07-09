@@ -119,13 +119,19 @@ def read_c():
 
 
 def _poll_buttons():
-    """Poll button B during blocking operations so a press is never dropped.
-    Registered as runtime.poll_buttons and called from inside redraw_graph."""
+    """Poll buttons B and C during blocking operations (graph redraw, QR
+    generation, cloud retry pauses) so a press is never dropped — it is
+    latched as pending and handled on the next main-loop pass.
+    Registered as runtime.poll_buttons."""
     try:
         b = read_b()
         if b and not state.prev_b:
             state._btn_b_pending = True
         state.prev_b = b
+        c = read_c()
+        if c and not state.prev_c:
+            state._btn_c_pending = True
+        state.prev_c = c
     except Exception:
         pass
 
@@ -493,9 +499,11 @@ while True:
                     ui.show_status("STA failed; AP")
                     wifi_mod.switch_to_ap(force_restart=True)
 
-    if (not c_now) and state.prev_c:
-        # released
-        if state.d2_hold_start is not None and (not state.d2_hold_fired):
+    if (not c_now) and (state.prev_c or state._btn_c_pending):
+        # released (or press was latched during a blocking operation)
+        _c_was_pending = state._btn_c_pending
+        state._btn_c_pending = False
+        if _c_was_pending or (state.d2_hold_start is not None and (not state.d2_hold_fired)):
             # short press behaviour:
             #   - When on SCREEN_REGULATORY: return to info screen.
             #   - When on SCREEN_APINFO in AP mode: cycle QR page (0->1->0).
@@ -506,17 +514,17 @@ while True:
                 ui.refresh_apinfo_screen()
             elif state.screen == config.SCREEN_APINFO and state.wifi_mode == config.WIFI_MODE_AP:
                 state._qr_page = 1 - state._qr_page          # toggle 0<->1
-                state._last_wifi_payload = None         # force QR rebuild for new page
-                ui.make_or_update_qrs(state.settings.get("ap_ssid", ""), state.settings.get("ap_password", ""), state.ip_str_cached or "192.168.4.1")
+                state.qr_refresh_needed = True  # page change -> deferred rebuild
             else:
                 state.screen = config.SCREEN_APINFO if state.screen == config.SCREEN_MAIN else config.SCREEN_MAIN
                 ui.update_visibility()
                 if state.screen == config.SCREEN_APINFO:
                     state._qr_page = 0           # always start at page 0 (WiFi QR) when entering
-                    state._last_wifi_payload = None
-                    if state.wifi_mode == config.WIFI_MODE_AP:
-                        ui.make_or_update_qrs(state.settings.get("ap_ssid", ""), state.settings.get("ap_password", ""), state.ip_str_cached or "192.168.4.1")
+                    # RC-50: switch the screen NOW (labels are cheap);
+                    # the QR builds from the main loop a moment later —
+                    # and is usually a cache hit, so nothing rebuilds.
                     ui.refresh_apinfo_screen()
+                    state.qr_refresh_needed = True
                 else:
                     ui.refresh_text()
                     if state.display_mode == 2:
@@ -738,6 +746,21 @@ while True:
                 state._sta_auto_retry_count = 0
             else:
                 wifi_mod.switch_to_ap()
+
+    # Deferred QR rebuild (RC-50): runs when the loop is idle so screen
+    # switches stay instant. Usually a cache no-op after the first build.
+    if state.qr_refresh_needed and state.screen == config.SCREEN_APINFO:
+        state.qr_refresh_needed = False
+        try:
+            ui.make_or_update_qrs(
+                state.settings.get("ap_ssid", ""),
+                state.settings.get("ap_password", ""),
+                state.ip_str_cached or (
+                    "192.168.4.1" if state.wifi_mode == config.WIFI_MODE_AP else "0.0.0.0"
+                ),
+            )
+        except Exception as e:
+            log('qr', 'QR build error:', e, min_interval=2.0)
 
     # If a graph redraw has been scheduled, perform it once the main loop is otherwise idle.
     if state.graph_refresh_needed and state.screen == config.SCREEN_MAIN and state.display_mode == 2 and (not state.graph_drawing):

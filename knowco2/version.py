@@ -6,7 +6,7 @@
 
 import sys as _sys
 
-FIRMWARE_VERSION = "RC-49-SocketEase-v1"
+FIRMWARE_VERSION = "RC-51-Perf-v1"
 
 
 def detect_circuitpython_version():

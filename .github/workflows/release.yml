@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags for the version-bump guard
 
       # ------------------------------------------------------------------ #
       # Determine the release version
@@ -35,6 +37,42 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Building release: $VERSION"
+
+      # ------------------------------------------------------------------ #
+      # Gate: compile everything and run the hardware-free test suites
+      # before building anything. (The OTA-installer suite needs a root
+      # container and runs in ci.yml on PRs instead — CodeBuild runners
+      # don't support job containers.)
+      # ------------------------------------------------------------------ #
+      - name: Compile all firmware modules
+        run: python3 -m py_compile $(find . -name "*.py" -not -path "./tests/*" -not -path "./.git/*")
+
+      - name: Run behavioral test suites
+        working-directory: tests
+        run: |
+          python3 test_cloud_heal.py
+          python3 test_snappy_ui.py
+          python3 test_graph_perf.py
+
+      # ------------------------------------------------------------------ #
+      # Gate: the tag must match the firmware version actually in the tree
+      # (prevents publishing vX.Y.Z containing an unbumped version.py)
+      # ------------------------------------------------------------------ #
+      - name: Verify version.py was bumped for this release
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          if ! grep -q "FIRMWARE_VERSION" knowco2/version.py; then
+            echo "::error::knowco2/version.py missing FIRMWARE_VERSION"; exit 1
+          fi
+          if git log -1 --format=%s | grep -qi "release"; then :; fi
+          # The version string must have changed in the commit history
+          # reachable from this tag relative to the previous release tag.
+          PREV=$(git tag --sort=-creatordate | grep -v "^${VERSION}$" | head -1 || true)
+          if [ -n "$PREV" ] && git diff --quiet "$PREV" HEAD -- knowco2/version.py; then
+            echo "::error::knowco2/version.py unchanged since $PREV — bump FIRMWARE_VERSION before tagging $VERSION"
+            exit 1
+          fi
+          echo "version.py check passed"
 
       # ------------------------------------------------------------------ #
       # Package 1 — OTA ZIP

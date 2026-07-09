@@ -30,10 +30,31 @@ except Exception:
     terminalio = None
 
 try:
+    import bitmaptools  # native-C drawing (built into CircuitPython)
+except ImportError:
+    bitmaptools = None
+
+try:
     import adafruit_miniqr
 except Exception as e:
     adafruit_miniqr = None
     print("miniqr IMPORT FAILED:", e)
+
+def _fill(bmp, x1, y1, x2, y2, value):
+    """Fill an inclusive rectangle. Uses bitmaptools (native C, one call)
+    when available; the pure-Python fallback is pixel-identical.
+    RC-51: the graph used to be drawn with up to ~25k individual Python
+    pixel writes per redraw (1-2 s); as ~70 native fills it takes ~50 ms."""
+    if x2 < x1 or y2 < y1:
+        return
+    if bitmaptools is not None:
+        # bitmaptools.fill_region's x2/y2 are EXCLUSIVE.
+        bitmaptools.fill_region(bmp, x1, y1, x2 + 1, y2 + 1, value)
+        return
+    for y in range(y1, y2 + 1):
+        for x in range(x1, x2 + 1):
+            bmp[x, y] = value
+
 
 def color_for_co2(co2):
     if co2 < state.LOW_THRESHOLD:
@@ -193,15 +214,27 @@ def build_wifi_qr_payload(ssid, pw):
 def build_url_qr_payload(ip_str):
     return "http://%s/" % ip_str
 
-def _make_qr_tile(payload, x0, y0, scale=2, target_modules=None):
-    if adafruit_miniqr is None:
-        return None
-
+def _get_qr_matrix(payload):
+    """QR matrix for a payload, cached. miniqr's .make() is ~0.3-1s of
+    pure Python per code (RC-50: this used to run up to THREE times per
+    screen entry); matrices are tiny, so cache them for the session."""
+    m = state._qr_mod_cache.get(payload)
+    if m is not None:
+        return m
+    runtime.poll_buttons()  # capture presses landing just before the build
     qr = adafruit_miniqr.QRCode(error_correct=adafruit_miniqr.L)
     qr.add_data(payload)
     qr.make()
-
+    runtime.poll_buttons()
     m = qr.matrix
+    state._qr_mod_cache[payload] = m
+    if len(state._qr_mod_cache) > 8:  # bounded; payloads rarely change
+        state._qr_mod_cache.clear()
+        state._qr_mod_cache[payload] = m
+    return m
+
+
+def _make_qr_tile_from_matrix(m, x0, y0, scale=2, target_modules=None):
     modules = m.width
 
     if target_modules is None:
@@ -218,6 +251,8 @@ def _make_qr_tile(payload, x0, y0, scale=2, target_modules=None):
     off = ((target_modules - modules) // 2) * scale
 
     for y in range(modules):
+        if y % 8 == 0:
+            runtime.poll_buttons()  # never drop a press during the blit
         for x in range(modules):
             if m[x, y]:
                 ox = off + x * scale
@@ -275,33 +310,27 @@ def make_or_update_qrs(ssid, pw, ip_str):
         caption_h = 12  # terminalio font cell height
         cap_pad = 2     # gap between caption bottom and QR top
 
-        # Measure module counts for both QRs.
-        tmp = adafruit_miniqr.QRCode(error_correct=adafruit_miniqr.L)
-        tmp.add_data(wifi_payload); tmp.make()
-        modules_wifi = tmp.matrix.width
-
-        tmp2 = adafruit_miniqr.QRCode(error_correct=adafruit_miniqr.L)
-        tmp2.add_data(url_payload); tmp2.make()
-        modules_url = tmp2.matrix.width
-
-        # Choose which QR to show and what caption to use.
+        # Choose which QR to show and what caption to use, then generate
+        # ONLY that code, once, via the matrix cache (RC-50: previously
+        # both payloads were generated just to measure them, plus the
+        # displayed one a third time).
         if state.wifi_mode == config.WIFI_MODE_STA:
             # STA: always show URL QR, no page indicator needed.
-            target_modules = modules_url
             payload = url_payload
             caption1_text = "Open page"
             show_indicator = False
         else:
             # AP: page-toggle between WiFi QR (page 0) and URL QR (page 1).
             if state._qr_page == 0:
-                target_modules = modules_wifi
                 payload = wifi_payload
                 caption1_text = "Scan to join"
             else:
-                target_modules = modules_url
                 payload = url_payload
                 caption1_text = "Open page"
             show_indicator = True
+
+        qr_matrix = _get_qr_matrix(payload)
+        target_modules = qr_matrix.width
 
         scale = 2
         for _s in (4, 3, 2):
@@ -321,12 +350,12 @@ def make_or_update_qrs(ssid, pw, ip_str):
 
         # Build the TileGrid.
         if state.wifi_mode == config.WIFI_MODE_STA or state._qr_page == 1:
-            state.qr_tilegrid_url = _make_qr_tile(payload, right_x, qr1_y,
+            state.qr_tilegrid_url = _make_qr_tile_from_matrix(qr_matrix, right_x, qr1_y,
                                             scale=scale, target_modules=target_modules)
             if state.qr_tilegrid_url is not None:
                 W.main_group.append(state.qr_tilegrid_url)
         else:
-            state.qr_tilegrid_wifi = _make_qr_tile(payload, right_x, qr1_y,
+            state.qr_tilegrid_wifi = _make_qr_tile_from_matrix(qr_matrix, right_x, qr1_y,
                                              scale=scale, target_modules=target_modules)
             if state.qr_tilegrid_wifi is not None:
                 W.main_group.append(state.qr_tilegrid_wifi)
@@ -356,6 +385,16 @@ def make_or_update_qrs(ssid, pw, ip_str):
         state._last_qr_page = None
         log("qr", "QR update failed:", e, min_interval=2.0)
 
+def _set_text(lbl, txt):
+    """Assign label text only when changed — every assignment forces a
+    glyph re-layout, and this screen refreshes every second (RC-50)."""
+    try:
+        if lbl.text != txt:
+            lbl.text = txt
+    except Exception:
+        pass
+
+
 def refresh_apinfo_screen():
     ssid = state.settings.get("ap_ssid", "")
     pw = state.settings.get("ap_password", "")
@@ -375,19 +414,19 @@ def refresh_apinfo_screen():
 
     # Show different headline depending on mode
     if state.wifi_mode == config.WIFI_MODE_STA:
-        W.ap_ssid_label.text = "STA: " + (state.settings.get("sta_ssid", "") or "")
-        W.ap_pass_label.text = ids.friendly_mdns_label(state.mdns_hostname) or "(mdns off)"
-        W.ap_ip_label.text = "IP:  " + ip
+        _set_text(W.ap_ssid_label, "STA: " + (state.settings.get("sta_ssid", "") or ""))
+        _set_text(W.ap_pass_label, ids.friendly_mdns_label(state.mdns_hostname) or "(mdns off)")
+        _set_text(W.ap_ip_label, "IP:  " + ip)
     else:
-        W.ap_ssid_label.text = "SSID: " + ssid
-        W.ap_pass_label.text = pw
-        W.ap_ip_label.text = "IP:   " + ip
+        _set_text(W.ap_ssid_label, "SSID: " + ssid)
+        _set_text(W.ap_pass_label, pw)
+        _set_text(W.ap_ip_label, "IP:   " + ip)
 
     vbat, pct = state.cached_vbat, state.cached_pct
     if vbat is None:
-        W.ap_batt_label.text = "Battery: N/A"
+        _set_text(W.ap_batt_label, "Battery: N/A")
     else:
-        W.ap_batt_label.text = "Battery: %.2fV (%d%%)" % (vbat, pct)
+        _set_text(W.ap_batt_label, "Battery: %.2fV (%d%%)" % (vbat, pct))
 
     hw = state.hwid_hex or "N/A"
     hw_short = (hw[:12] + "…") if (hw and len(hw) > 12) else hw
@@ -395,20 +434,15 @@ def refresh_apinfo_screen():
     scd_sn = state.scd_serial_str or "N/A"
     scd_short = (scd_sn[:12] + "…") if (scd_sn and len(scd_sn) > 12) else scd_sn
 
-    W.ap_hw_label.text = "HW:  " + (hw_short or "N/A")
-    W.ap_scd_label.text = state.sensor_model_str + ": " + (scd_short or "N/A")
-    W.ap_fw_label.text = "FW:" + version.FIRMWARE_VERSION + "  CP:" + version.CP_VERSION
+    _set_text(W.ap_hw_label, "HW:  " + (hw_short or "N/A"))
+    _set_text(W.ap_scd_label, state.sensor_model_str + ": " + (scd_short or "N/A"))
+    _set_text(W.ap_fw_label, "FW:" + version.FIRMWARE_VERSION + "  CP:" + version.CP_VERSION)
 
-    # Keep QR codes in sync with the current mode / address.
+    # Keep QR codes in sync with the current mode / address — deferred to
+    # the main loop (RC-50) so this refresh stays cheap; the payload cache
+    # makes the deferred call a no-op unless something actually changed.
     if state.screen == config.SCREEN_APINFO and adafruit_miniqr is not None:
-        try:
-            if state.wifi_mode == config.WIFI_MODE_AP:
-                make_or_update_qrs(state.settings.get("ap_ssid", ""), state.settings.get("ap_password", ""), state.ip_str_cached or "192.168.4.1")
-            else:
-                # In STA, URL QR will prefer mDNS automatically inside make_or_update_qrs().
-                make_or_update_qrs(state.settings.get("ap_ssid", ""), state.settings.get("ap_password", ""), state.ip_str_cached or "0.0.0.0")
-        except Exception as _e:
-            pass
+        state.qr_refresh_needed = True
 
 
 def update_wifi_indicator():
@@ -602,17 +636,16 @@ def redraw_graph():
             # This guarantees no gap at the left regardless of PIXELS_PER_SAMPLE.
             _total_px = W.GRAPH_WIDTH - 2  # drawable columns excluding Y-axis line
 
+            runtime.poll_buttons()
             # Horizontal grid lines at 25 %, 50 % and 75 % of graph height.
             for y in [int(W.GRAPH_HEIGHT * 0.25), int(W.GRAPH_HEIGHT * 0.5), int(W.GRAPH_HEIGHT * 0.75)]:
                 if 0 <= y < W.GRAPH_HEIGHT:
-                    for x in range(W.GRAPH_WIDTH):
-                        W.graph_bitmap[x, y] = 1
+                    _fill(W.graph_bitmap, 0, y, W.GRAPH_WIDTH - 1, y, 1)
 
+            runtime.poll_buttons()
             # Vertical grid lines every 20 px from the Y-axis.
             for x in range(2, W.GRAPH_WIDTH, 20):
-                for yy in range(W.GRAPH_HEIGHT):
-                    if W.graph_bitmap[x, yy] == 0:
-                        W.graph_bitmap[x, yy] = 1
+                _fill(W.graph_bitmap, x, 0, x, W.GRAPH_HEIGHT - 1, 1)
 
             latest_x = W.GRAPH_WIDTH - 1
             latest_y = None
@@ -632,9 +665,10 @@ def redraw_graph():
                 if x_start > x_end:
                     x_end = x_start
 
-                for x in range(x_start, x_end + 1):
-                    for yy in range(W.GRAPH_HEIGHT - 1, W.GRAPH_HEIGHT - 1 - h, -1):
-                        W.graph_bitmap[x, yy] = color_idx
+                if h > 0:
+                    _fill(W.graph_bitmap,
+                          x_start, W.GRAPH_HEIGHT - h,
+                          x_end, W.GRAPH_HEIGHT - 1, color_idx)
 
                 if k == n - 1:
                     latest_x = x_end
@@ -657,15 +691,9 @@ def redraw_graph():
             # Y-axis: 2-pixel wide vertical line at the left edge of the graph bitmap.
             # On screen this appears at x = GRAPH_MARGIN, forming a clear border
             # between the label gutter and the plotted area.
-            for yy in range(W.GRAPH_HEIGHT):
-                W.graph_bitmap[0, yy] = 6
-                if W.GRAPH_WIDTH > 1:
-                    W.graph_bitmap[1, yy] = 6
+            _fill(W.graph_bitmap, 0, 0, min(1, W.GRAPH_WIDTH - 1), W.GRAPH_HEIGHT - 1, 6)
             # X-axis: 2-pixel tall horizontal line at the very bottom of the bitmap.
-            for xx in range(W.GRAPH_WIDTH):
-                W.graph_bitmap[xx, W.GRAPH_HEIGHT - 1] = 6
-                if W.GRAPH_HEIGHT > 1:
-                    W.graph_bitmap[xx, W.GRAPH_HEIGHT - 2] = 6
+            _fill(W.graph_bitmap, 0, max(0, W.GRAPH_HEIGHT - 2), W.GRAPH_WIDTH - 1, W.GRAPH_HEIGHT - 1, 6)
     finally:
         # Mark redraw complete so future redraw requests may proceed
         state.graph_drawing = False

@@ -67,6 +67,14 @@ status_timeout = 0.0
 alert_triggered = False
 graph_drawing = False
 graph_refresh_needed = False
+# Deferred QR rebuild (RC-50): screen switches must be instant, so QR
+# generation (~1s of pure-Python miniqr work) runs from the main loop
+# when idle, exactly like the graph redraw.
+qr_refresh_needed = False
+# C presses captured during blocking operations (mirrors _btn_b_pending).
+_btn_c_pending = False
+# payload -> module count cache so QR sizing never regenerates a code.
+_qr_mod_cache = {}
 sensor_frozen_shown = False
 rate_of_change = None
 

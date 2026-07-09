@@ -280,7 +280,17 @@ def cloud_send(payload_dict):
                     state._wd.feed()
                 except Exception:
                     pass
-            time.sleep(config.CLOUD_MEM_RETRY_PAUSE_S)
+            # Sliced sleep: keep buttons responsive and the watchdog fed
+            # during the drain pause (RC-50).
+            _pause_end = time.monotonic() + config.CLOUD_MEM_RETRY_PAUSE_S
+            while time.monotonic() < _pause_end:
+                runtime.poll_buttons()
+                if state._wd is not None:
+                    try:
+                        state._wd.feed()
+                    except Exception:
+                        pass
+                time.sleep(0.1)
             if state._wd is not None:
                 try:
                     state._wd.feed()
