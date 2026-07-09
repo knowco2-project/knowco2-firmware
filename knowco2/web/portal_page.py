@@ -810,8 +810,16 @@ def render_settings_page():
 
     drawChart(initialPoints);
     refreshStatusFromServer();
-    setInterval(refreshChartFromServer, 5000);
-    setInterval(refreshStatusFromServer, 5000);
+    // RC-49: slower, staggered polling. Every poll is a fresh TCP
+    // connection the device must close, and closed sockets sit in
+    // TIME_WAIT (~2 min) holding LWIP memory in the ESP32-S3's internal
+    // SRAM -- the same pool mbedTLS needs for cloud TLS handshakes.
+    // 2x5s polling parked ~48 sockets and starved cloud uploads
+    // (MemoryError in wrap_socket); 10s/15s staggered parks ~14.
+    setInterval(refreshStatusFromServer, 10000);
+    setTimeout(function () {
+      setInterval(refreshChartFromServer, 15000);
+    }, 5000);
   </script>
   <p style='color:#666;font-size:12px;margin-top:12px' data-i18n='note_https'>Note: Local web server uses HTTP (HTTPS not supported in CircuitPython). Traffic stays on your LAN.</p>
 <script>

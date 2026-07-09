@@ -189,6 +189,17 @@ cloud_consec_memerr = 0
 # uses for TLS; independent of gc.mem_free() (PSRAM). None = unknown.
 idf_free = None
 idf_largest_block = None
+# Forensics captured AT the moment of the last cloud failure (RC-48v3):
+# traceback tail of the failing line + heap picture when it failed.
+cloud_last_trace = ""
+# monotonic time of the last handled HTTP request; the cloud mem-reset
+# defers while someone is actively using the web UI (RC-48v4) so the
+# self-heal reboot can never kill an in-flight OTA upload.
+last_http_ts = 0.0
+
+idf_free_at_fail = None
+idf_largest_at_fail = None
+mem_free_at_fail = None
 
 # ── MQTT / Adafruit IO timing ───────────────────────────────────────
 last_mqtt_send = 0.0

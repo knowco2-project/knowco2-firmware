@@ -129,3 +129,9 @@ CLOUD_MEMERR_RESET_AFTER = 5
 # ...but never within this many seconds of boot (reboot-loop guard;
 # safemode.py's NVM retry counter is the second backstop).
 CLOUD_MEMERR_RESET_MIN_UPTIME_S = 600
+# ...and never while the web UI was used within this many seconds
+# (protects in-flight OTA uploads from the self-heal reboot).
+CLOUD_MEMERR_RESET_WEB_GRACE_S = 300
+# Pause before the single in-send retry after a mem-class failure;
+# gives LWIP a moment to reclaim TIME_WAIT socket memory (RC-49).
+CLOUD_MEM_RETRY_PAUSE_S = 3

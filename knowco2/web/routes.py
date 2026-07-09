@@ -216,6 +216,14 @@ def handle_status_route(conn):
     except Exception:
         pass
 
+    # Failure forensics (RC-48v3): what exactly failed, and what the heaps
+    # looked like at that instant.
+    if state.cloud_last_trace:
+        payload["cloud_last_trace"] = state.cloud_last_trace
+        payload["idf_free_at_fail"] = state.idf_free_at_fail
+        payload["idf_largest_at_fail"] = state.idf_largest_at_fail
+        payload["mem_free_at_fail"] = state.mem_free_at_fail
+
     payload["energy_mode"] = state.energy_mode
     payload["scd_period_effective"] = state._scd_period_effective
 
@@ -481,6 +489,80 @@ def _zip_ensure_dir(path):
             _e_os.mkdir(current)
         except OSError:
             pass  # already exists
+
+
+def _fs_free_bytes():
+    """Free bytes on the CIRCUITPY filesystem, or None if unknown."""
+    try:
+        import os as _s_os
+        st = _s_os.statvfs("/")
+        return st[1] * st[4]  # f_frsize * f_bavail
+    except Exception:
+        return None
+
+
+def _fs_junk_cleanup(root="/"):
+    """Reclaim flash before an OTA. Removes things that are never firmware:
+    macOS Finder metadata sprayed onto the FAT volume during USB rescues
+    (.DS_Store, ._AppleDouble files, .Trashes, .fseventsd, .Spotlight-V100),
+    plus stale artifacts of interrupted updates (/update.zip, /update.tmp,
+    /code.py.ota, /ota_staged). Returns bytes freed. Never raises."""
+    import os as _c_os
+    freed = [0]
+
+    def _rm_file(path):
+        try:
+            freed[0] += _c_os.stat(path)[6]
+        except Exception:
+            pass
+        try:
+            _c_os.remove(path)
+        except Exception:
+            pass
+
+    def _rm_tree(path):
+        try:
+            for name in _c_os.listdir(path):
+                child = path + "/" + name
+                try:
+                    if _c_os.stat(child)[0] & 0x4000:
+                        _rm_tree(child)
+                    else:
+                        _rm_file(child)
+                except Exception:
+                    pass
+            _c_os.rmdir(path)
+        except Exception:
+            pass
+
+    def _walk(path):
+        try:
+            names = _c_os.listdir(path)
+        except Exception:
+            return
+        for name in names:
+            child = (path.rstrip("/") + "/" + name) if path != "/" else "/" + name
+            if name == ".DS_Store" or name.startswith("._"):
+                _rm_file(child)
+                continue
+            try:
+                if _c_os.stat(child)[0] & 0x4000:
+                    if name in (".Trashes", ".fseventsd", ".Spotlight-V100",
+                                ".TemporaryItems", "ota_staged"):
+                        _rm_tree(child)
+                    else:
+                        _walk(child)
+            except Exception:
+                pass
+
+    _walk(root)
+    for stale in ("/update.zip", "/update.tmp", "/code.py.ota"):
+        try:
+            _c_os.stat(stale)
+            _rm_file(stale)
+        except Exception:
+            pass
+    return freed[0]
 
 
 def _parse_zip_entries(zip_path):
@@ -758,6 +840,87 @@ def _process_zip_update(conn, zip_path):
 
     _rmtree(STAGE_ROOT)  # clear leftovers from any earlier interrupted OTA
 
+    # ------------------------------------------------------------------
+    # RC-48v4 SPACE-AWARE MODE SELECTION
+    # ------------------------------------------------------------------
+    # Full staging needs the whole uncompressed tree on flash next to the
+    # live one. Small CIRCUITPY partitions (plus a resident zip) can't
+    # always afford that, so when space is short we fall back to per-file
+    # mode: extract ONE file to a temp, CRC-verify it, rename it into
+    # place, repeat. Interruption can leave a mix of old/new files but
+    # every file is COMPLETE (renames never truncate) and re-running the
+    # same OTA finishes the job. code.py is installed LAST so the main
+    # script only swaps after all modules have landed.
+    # ------------------------------------------------------------------
+    total_uncomp = sum(e["uncomp_size"] for _, e in safe)
+    free = _fs_free_bytes()
+    max_single = max(e["uncomp_size"] for _, e in safe)
+    per_file_mode = free is not None and free < total_uncomp + 49152
+    if per_file_mode and free < max_single + 32768:
+        _abort("Not enough flash space to install even file-by-file: "
+               "largest file is %d bytes, only %d free. Free up space "
+               "(e.g. delete /code.py.bak or unused assets) and retry."
+               % (max_single, free))
+        return
+    if per_file_mode:
+        log("ota", "low-space per-file mode: free=%d need=%d" % (free, total_uncomp))
+        safe.sort(key=lambda de: 1 if de[0] == "code.py" else 0)  # code.py last
+
+    if per_file_mode:
+        # ---- PER-FILE: stage one, verify, commit, repeat ----------------
+        installed = []
+        tmp = STAGE_ROOT + "/stagefile.tmp"
+        for dest, e in safe:
+            _wd_feed()
+            ok, msg = _extract_zip_entry_to_file(zip_path, e, tmp)
+            _gcz.collect()
+            if not ok:
+                _rmtree(STAGE_ROOT)
+                _send_ota_result(conn, False,
+                    "OTA stopped at %s: %s. %d/%d files were installed "
+                    "(all complete); re-run this same OTA to finish." %
+                    (dest, msg, len(installed), len(safe)))
+                return
+            try:
+                if dest == "code.py":
+                    try: _oz.remove("/code.py.bak")
+                    except Exception: pass
+                    try: _oz.rename("/code.py", "/code.py.bak")
+                    except Exception: pass
+                else:
+                    try: _oz.remove("/" + dest)
+                    except Exception: pass
+                _zip_ensure_dir("/" + dest)
+                _oz.rename(tmp, "/" + dest)
+                installed.append(dest)
+            except Exception as re_err:
+                _rmtree(STAGE_ROOT)
+                _send_ota_result(conn, False,
+                    "Commit failed at %s after %d/%d files: %s. "
+                    "Re-run this OTA to finish (idempotent)." %
+                    (dest, len(installed), len(safe), str(re_err)))
+                return
+        _rmtree(STAGE_ROOT)
+        try: _oz.remove(zip_path)
+        except Exception: pass
+        summary = ("Installed and CRC-verified %d files (low-space "
+                   "per-file mode)." % len(installed))
+        if skipped:
+            summary += " Skipped (outside allowed paths): " + ", ".join(skipped[:4]) + "."
+        _send_ota_result(conn, True, summary + " Rebooting in 3 seconds.")
+        time.sleep(3)
+        try:
+            if microcontroller is not None:
+                microcontroller.reset()
+        except Exception:
+            pass
+        try:
+            import supervisor as _sup
+            _sup.reload()
+        except Exception:
+            pass
+        return
+
     # ---- PHASE 1: extract + CRC-verify everything into staging --------
     staged = []  # (final_dest, staged_path)
     for dest, e in safe:
@@ -898,6 +1061,31 @@ will accept updates for 5&nbsp;minutes. Then reload this page.</div>
             except Exception: pass
         except Exception:
             pass
+
+        # RC-48v4: reclaim junk (macOS metadata, stale OTA artifacts) and
+        # refuse the upload EARLY if it cannot fit, instead of dying with
+        # ENOSPC halfway through the stream.
+        _freed = _fs_junk_cleanup()
+        if _freed:
+            log("ota", "pre-upload cleanup freed %d bytes" % _freed)
+        _need = None
+        try:
+            _low = raw_headers.lower()
+            _ix = _low.find(b"content-length:")
+            if _ix >= 0:
+                _end = _low.find(b"\r\n", _ix)
+                _need = int(_low[_ix + 15:_end].strip())
+        except Exception:
+            _need = None
+        _free = _fs_free_bytes()
+        if _need is not None and _free is not None and _need + 16384 > _free:
+            _send_ota_result(conn, False,
+                "Not enough flash space for the upload: need %d bytes plus "
+                "working room, %d free (junk cleanup already reclaimed %d). "
+                "Free up space (e.g. delete /code.py.bak or unused assets) "
+                "and try again." % (_need, _free, _freed))
+            return
+
         tmp_path = "/update.tmp"
         ok, msg = stream_request_body_to_file(conn, raw_headers, tmp_path)
         if not ok:
@@ -1362,6 +1550,7 @@ def handle_http_client():
         return
 
     try:
+        state.last_http_ts = time.monotonic()  # someone is using the web UI
         data = read_request_head(conn)
         if not data:
             try: conn.close()

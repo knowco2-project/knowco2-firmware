@@ -71,6 +71,11 @@ try:
 except Exception:
     microcontroller = None
 
+try:
+    import traceback
+except Exception:
+    traceback = None
+
 
 def idf_heap_info():
     """Return (free_bytes, largest_free_block) of the ESP-IDF internal
@@ -83,6 +88,34 @@ def idf_heap_info():
                 espidf.heap_caps_get_largest_free_block())
     except Exception:
         return (None, None)
+
+
+def _record_failure(e):
+    """Forensics for /status: full traceback of the failing line plus the
+    heap picture AT the moment of failure (the /status-time numbers can
+    look healthy even when the failing allocation could not be serviced)."""
+    try:
+        if traceback is not None:
+            try:
+                trace = "".join(traceback.format_exception(e))
+            except TypeError:  # older CP signature
+                trace = "".join(
+                    traceback.format_exception(type(e), e, getattr(e, "__traceback__", None))
+                )
+        else:
+            trace = repr(e)
+        # keep the tail: innermost frames + the exception line
+        state.cloud_last_trace = trace[-600:]
+    except Exception:
+        state.cloud_last_trace = repr(e)
+    try:
+        state.idf_free_at_fail, state.idf_largest_at_fail = idf_heap_info()
+    except Exception:
+        pass
+    try:
+        state.mem_free_at_fail = gc.mem_free()
+    except Exception:
+        pass
 
 
 def teardown_session(reason=""):
@@ -114,7 +147,16 @@ def _maybe_memerr_reset():
     if microcontroller is None:
         return
     try:
-        if (time.monotonic() - state.boot_time_mono) < config.CLOUD_MEMERR_RESET_MIN_UPTIME_S:
+        now = time.monotonic()
+        if (now - state.boot_time_mono) < config.CLOUD_MEMERR_RESET_MIN_UPTIME_S:
+            return
+        # Someone is actively using the web UI (status page, settings, an
+        # OTA upload in progress): a persistent cloud fault means this
+        # reset would fire every ~31 min, and rebooting mid-upload turns a
+        # recovery attempt into "network error". Defer; cloud is already
+        # down, so waiting costs nothing.
+        if state.last_http_ts and (now - state.last_http_ts) < config.CLOUD_MEMERR_RESET_WEB_GRACE_S:
+            log("cloud", "mem-reset deferred: web UI active", min_interval=30.0)
             return
     except Exception:
         return
@@ -225,7 +267,29 @@ def cloud_send(payload_dict):
         except Exception:
             pass
     try:
-        r = session.post(url, data=body, headers=headers, timeout=8)
+        try:
+            r = session.post(url, data=body, headers=headers, timeout=8)
+        except (MemoryError, RuntimeError):
+            # RC-49: mem-class failures here are usually transient LWIP
+            # internal-SRAM pressure from web-UI connection churn
+            # (TIME_WAIT sockets). Slots drain continuously, so tear
+            # down, breathe, and retry ONCE before counting a failure.
+            teardown_session("retrying after mem-class failure")
+            if state._wd is not None:
+                try:
+                    state._wd.feed()
+                except Exception:
+                    pass
+            time.sleep(config.CLOUD_MEM_RETRY_PAUSE_S)
+            if state._wd is not None:
+                try:
+                    state._wd.feed()
+                except Exception:
+                    pass
+            session = _get_session()
+            if session is None:
+                raise
+            r = session.post(url, data=body, headers=headers, timeout=8)
 
         resp_preview = ""
         try:
@@ -260,6 +324,7 @@ def cloud_send(payload_dict):
         # Both are memory-class faults: tear down + count toward reset.
         state.cloud_last_http = None
         state.cloud_last_error = repr(e)
+        _record_failure(e)
         state.cloud_consec_memerr += 1
         log("cloud", "cloud_send mem-class error:", e,
             "(consecutive: %d)" % state.cloud_consec_memerr, min_interval=2.0)
@@ -271,6 +336,7 @@ def cloud_send(payload_dict):
     except Exception as e:
         state.cloud_last_http = None
         state.cloud_last_error = repr(e)
+        _record_failure(e)
         log("cloud", "cloud_send error:", e, min_interval=2.0)
         runtime.show_status("Cloud: fail")
         return False
