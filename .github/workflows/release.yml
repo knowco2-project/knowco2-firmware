@@ -173,18 +173,28 @@ jobs:
           cp -r knowco2 "$STAGING/"
           cp -r assets "$STAGING/"
 
-          # Compile the package to bytecode, then drop the .py source
-          find "$STAGING/knowco2" -name "*.py" | while read -r f; do
+          # Compile the package to bytecode, then drop the .py source.
+          # version.py is exempted: the KnowCO2 Flasher (and our own
+          # "Get firmware version string" step above) reads it as plain
+          # text to find FIRMWARE_VERSION before/after flashing. It's
+          # ~700 bytes — leaving it uncompiled costs nothing.
+          find "$STAGING/knowco2" -name "*.py" ! -name "version.py" | while read -r f; do
             ./mpy-cross "$f" -o "${f%.py}.mpy"
             rm "$f"
           done
 
-          # Gate: every module must have compiled — never ship a partially
-          # compiled package
-          remaining=$(find "$STAGING/knowco2" -name "*.py" | wc -l)
+          # Gate: every module except version.py must have compiled —
+          # never ship a partially compiled package
+          remaining=$(find "$STAGING/knowco2" -name "*.py" ! -name "version.py" | wc -l)
           if [ "$remaining" -ne 0 ]; then
             echo "::error::${remaining} knowco2/*.py file(s) failed to compile to .mpy"
-            find "$STAGING/knowco2" -name "*.py"
+            find "$STAGING/knowco2" -name "*.py" ! -name "version.py"
+            exit 1
+          fi
+
+          # Sanity check: version.py must still be present and readable
+          if [ ! -f "$STAGING/knowco2/version.py" ] || ! grep -q "FIRMWARE_VERSION" "$STAGING/knowco2/version.py"; then
+            echo "::error::knowco2/version.py missing or unreadable in Production ZIP staging"
             exit 1
           fi
 
