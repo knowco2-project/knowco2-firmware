@@ -6,7 +6,7 @@
 
 import sys as _sys
 
-FIRMWARE_VERSION = "RC-52-Buttons-v5"
+FIRMWARE_VERSION = "RC-52-Buttons-v6"
 
 
 def detect_circuitpython_version():

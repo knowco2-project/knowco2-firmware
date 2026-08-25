@@ -3,8 +3,9 @@
 # Internationalisation helpers for the settings portal.
 #
 # LANG_NAMES  – ordered dict of language code → display name shown in
-#               the selector.  Add a new entry here + a matching <code>.py
-#               file in this directory to support an additional language.
+#               the selector.  Add a new entry here + a matching entry
+#               in translations.py's TRANSLATIONS dict to support an
+#               additional language.
 #
 # build_lang_options(current_lang) – renders the <option> elements for
 #               the language <select>.
@@ -14,6 +15,8 @@
 # ------------------------------------------------------------------
 
 import json
+
+from .translations import TRANSLATIONS
 
 LANG_NAMES = {
     "en": "English",
@@ -51,20 +54,12 @@ def build_lang_options(current_lang):
 
 
 def build_translations_js():
-    """Return the var T={...}; JS block built from per-language modules.
+    """Return the var T={...}; JS block built from TRANSLATIONS.
 
-    Each language module must export a dict named T containing all i18n keys.
-    New languages: add an entry to LANG_NAMES above and create a matching
-    <code>.py file next to this file.
+    New languages: add an entry to LANG_NAMES above and to the
+    TRANSLATIONS dict in translations.py.
     """
-    from . import en, es, fr, de, pt, it, nl, sv, pl, cs, ru, uk, tr, vi, id, hi, bn, ta, th, ja, zh, ko
     parts = []
-    for code, mod in (
-        ("en", en), ("es", es), ("fr", fr), ("de", de), ("pt", pt),
-        ("it", it), ("nl", nl), ("sv", sv), ("pl", pl), ("cs", cs),
-        ("ru", ru), ("uk", uk), ("tr", tr), ("vi", vi), ("id", id),
-        ("hi", hi), ("bn", bn), ("ta", ta), ("th", th),
-        ("ja", ja), ("zh", zh), ("ko", ko),
-    ):
-        parts.append('"' + code + '":' + json.dumps(mod.T))
+    for code in LANG_NAMES:
+        parts.append('"' + code + '":' + json.dumps(TRANSLATIONS[code]))
     return "var T={" + ",".join(parts) + "};"
