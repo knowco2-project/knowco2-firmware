@@ -99,15 +99,16 @@ jobs:
           unzip -l "knowco2-ota-${VERSION}.zip"
 
       # ------------------------------------------------------------------ #
-      # Package 2 — Full Install ZIP
-      # User unzips directly onto the CIRCUITPY drive for a fresh install
-      # or a complete upgrade (includes lib/).
-      # Uses the lib snapshot from lib-*/  directory in the repo.
+      # Package 2 — Dev ZIP (editable source)
+      # For developers who want to edit knowco2/*.py live on the device
+      # over USB without recompiling. NOT what factory/production flashing
+      # should use — see Package 2b below, which is what the KnowCO2
+      # Flasher actually fetches under the name "full".
       # ------------------------------------------------------------------ #
-      - name: Build Full Install ZIP
+      - name: Build Dev ZIP
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          STAGING="staging-full"
+          STAGING="staging-dev"
           mkdir -p "$STAGING/lib"
 
           cp code.py boot.py "$STAGING/"
@@ -123,11 +124,11 @@ jobs:
           cp -r "$LIB_DIR/." "$STAGING/lib/"
 
           cd "$STAGING"
-          zip -r "../knowco2-full-${VERSION}.zip" .
+          zip -r "../knowco2-dev-${VERSION}.zip" .
           cd ..
 
-          echo "Full ZIP contents:"
-          unzip -l "knowco2-full-${VERSION}.zip"
+          echo "Dev ZIP contents:"
+          unzip -l "knowco2-dev-${VERSION}.zip"
 
       # ------------------------------------------------------------------ #
       # Fetch mpy-cross matching this board's CircuitPython version. Used
@@ -155,18 +156,21 @@ jobs:
           ./mpy-cross --version
 
       # ------------------------------------------------------------------ #
-      # Package 2b — Production ZIP
-      # Space-optimized fresh-install package: knowco2/ is compiled to
-      # .mpy bytecode instead of shipped as .py source, so the whole
-      # package fits the approved 960 KB CIRCUITPY budget. This is the
-      # package the KnowCO2 Flasher looks for when flashing a fresh device.
+      # Package 2b — Full ZIP (space-optimized, factory install)
+      # knowco2/ is compiled to .mpy bytecode instead of shipped as .py
+      # source, so the whole package fits the approved 960 KB CIRCUITPY
+      # budget. This ships as knowco2-full-*.zip because the KnowCO2
+      # Flasher's source policy fetches "latest published KnowCO2 full
+      # release" by that exact name — it does not know about "production"
+      # or "dev" as package types. If that Flasher policy ever changes,
+      # revisit this naming.
       # code.py / boot.py stay as .py — they're the entry point, and
       # code.py is validated as text during OTA installs.
       # ------------------------------------------------------------------ #
-      - name: Build Production ZIP
+      - name: Build Full ZIP
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          STAGING="staging-production"
+          STAGING="staging-full"
           mkdir -p "$STAGING/lib"
 
           cp code.py boot.py "$STAGING/"
@@ -194,11 +198,11 @@ jobs:
 
           # Sanity check: version.py must still be present and readable
           if [ ! -f "$STAGING/knowco2/version.py" ] || ! grep -q "FIRMWARE_VERSION" "$STAGING/knowco2/version.py"; then
-            echo "::error::knowco2/version.py missing or unreadable in Production ZIP staging"
+            echo "::error::knowco2/version.py missing or unreadable in Full ZIP staging"
             exit 1
           fi
 
-          # Use the same lib snapshot as the Full ZIP
+          # Use the same lib snapshot as the Dev ZIP
           LIB_DIR=$(ls -d lib-*-release 2>/dev/null | sort -r | head -1)
           if [ -z "$LIB_DIR" ]; then
             LIB_DIR="lib"
@@ -207,11 +211,11 @@ jobs:
           cp -r "$LIB_DIR/." "$STAGING/lib/"
 
           cd "$STAGING"
-          zip -r "../knowco2-production-${VERSION}.zip" .
+          zip -r "../knowco2-full-${VERSION}.zip" .
           cd ..
 
-          echo "Production ZIP contents:"
-          unzip -l "knowco2-production-${VERSION}.zip"
+          echo "Full ZIP contents:"
+          unzip -l "knowco2-full-${VERSION}.zip"
 
       # ------------------------------------------------------------------ #
       # Package 3 — Source ZIP
@@ -247,8 +251,8 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           sha256sum \
             "knowco2-ota-${VERSION}.zip" \
-            "knowco2-production-${VERSION}.zip" \
             "knowco2-full-${VERSION}.zip" \
+            "knowco2-dev-${VERSION}.zip" \
             "knowco2-source-${VERSION}.zip" \
             > "knowco2-${VERSION}-checksums.txt"
           cat "knowco2-${VERSION}-checksums.txt"
@@ -285,8 +289,8 @@ jobs:
 
           | File | Use when |
           |---|---|
-          | `knowco2-production-*.zip` | Fresh install on a factory/blank device — unzip onto your `CIRCUITPY` drive. Space-optimized (knowco2/ compiled to .mpy) to fit the 960 KB CIRCUITPY budget. **Use this with the KnowCO2 Flasher.** |
-          | `knowco2-full-*.zip` | Fresh install or upgrade for developers — same contents as Production, but knowco2/ is plain, editable `.py` source. Larger; may not fit factory-blank boards. |
+          | `knowco2-full-*.zip` | Fresh install on a factory/blank device — unzip onto your `CIRCUITPY` drive. Space-optimized (knowco2/ compiled to .mpy) to fit the 960 KB CIRCUITPY budget. **This is what the KnowCO2 Flasher fetches automatically.** |
+          | `knowco2-dev-*.zip` | Fresh install or upgrade for developers who want to edit `knowco2/*.py` live on the device — plain, editable source instead of compiled bytecode. Larger; may not fit factory-blank boards. |
           | `knowco2-ota-*.zip` | OTA upgrade — upload at `http://knowco2-XXXX.local/update` |
           | `knowco2-source-*.zip` | Source code — for developers who want to read or modify the firmware |
 
@@ -298,8 +302,8 @@ jobs:
           See `*-checksums.txt` attached below to verify your download.
           NOTES
           )" \
-            "knowco2-production-${VERSION}.zip" \
             "knowco2-full-${VERSION}.zip" \
+            "knowco2-dev-${VERSION}.zip" \
             "knowco2-ota-${VERSION}.zip" \
             "knowco2-source-${VERSION}.zip" \
             "knowco2-${VERSION}-checksums.txt"
@@ -313,9 +317,9 @@ jobs:
           echo "=========================================="
           echo "  Release $VERSION published successfully"
           echo "=========================================="
-          echo "  Production ZIP: knowco2-production-${VERSION}.zip"
+          echo "  Full ZIP (factory/Flasher): knowco2-full-${VERSION}.zip"
+          echo "  Dev ZIP (editable source):  knowco2-dev-${VERSION}.zip"
           echo "  OTA ZIP:    knowco2-ota-${VERSION}.zip"
-          echo "  Full ZIP:   knowco2-full-${VERSION}.zip"
           echo "  Source ZIP: knowco2-source-${VERSION}.zip"
           echo "  Checksums:  knowco2-${VERSION}-checksums.txt"
           echo "=========================================="
