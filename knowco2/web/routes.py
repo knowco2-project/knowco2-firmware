@@ -1549,6 +1549,7 @@ def handle_http_client():
     except OSError:
         return
 
+    runtime.show_busy("web")  # RC-52: serving a page can block ~0.1-2.5 s
     try:
         state.last_http_ts = time.monotonic()  # someone is using the web UI
         data = read_request_head(conn)
@@ -1635,6 +1636,7 @@ def handle_http_client():
     except Exception as e:
         log("http_err", "HTTP error:", e, min_interval=1.0)
     finally:
+        runtime.clear_busy()
         try:
             conn.close()
         except Exception:

@@ -11,7 +11,6 @@ import time
 import gc
 import board
 import displayio
-import digitalio
 
 try:
     import microcontroller
@@ -26,7 +25,7 @@ except ImportError:
 # --- package: core + subsystems ---
 from knowco2 import state, config, version, runtime, helpers
 from knowco2 import settings as settings_mod
-from knowco2 import battery, ids, sensors
+from knowco2 import battery, ids, sensors, buttons as buttons_mod
 from knowco2.net import wifi as wifi_mod, ntp as ntp_mod
 from knowco2.telemetry import cloud as cloud_mod, mqtt as mqtt_mod
 from knowco2 import web
@@ -91,49 +90,44 @@ runtime.register(
     refresh_text=ui.refresh_text,
     compute_trend_arrow=ui.compute_trend_arrow,
     start_http_server=web.start_http_server,
-    poll_buttons=lambda: _poll_buttons(),
+    poll_buttons=lambda: buttons.scan(),
+    show_busy=ui.show_busy,
+    clear_busy=ui.clear_busy,
 )
 
 
 # ======================================================================
-#  BUTTONS / INPUT
+#  BUTTONS / INPUT  (RC-52: queued events, see knowco2/buttons.py)
+#  Presses are scanned by a hardware timer and queued, so a press made
+#  while the loop is blocked in a network call is applied the moment the
+#  call returns instead of being lost. `buttons.scan()` is also registered
+#  as runtime.poll_buttons for the digitalio fallback (simulator).
 # ======================================================================
-btn_a = digitalio.DigitalInOut(board.D0)
-btn_a.switch_to_input(pull=digitalio.Pull.UP)
-btn_b = digitalio.DigitalInOut(board.D1)
-btn_b.switch_to_input(pull=digitalio.Pull.DOWN)
-btn_c = digitalio.DigitalInOut(board.D2)
-btn_c.switch_to_input(pull=digitalio.Pull.DOWN)
+buttons = buttons_mod.Buttons(
+    board.D0, board.D1, board.D2,
+    a_hold_s=config.LP_A_HOLD_SECONDS,
+    b_hold_s=config.B_HOLD_SECONDS,
+    c_hold_s=config.D2_HOLD_SECONDS,
+    ab_hold_s=config.OTA_UNLOCK_HOLD_SECONDS,
+    # B hold (regulatory screen) only exists on the info screen.
+    b_hold_allowed=lambda: state.screen == config.SCREEN_APINFO,
+    # On the main screen B has no hold action, so fire on press for instant
+    # view cycling. Never while A is down (A+B = OTA unlock gesture).
+    b_fire_on_press=lambda: (state.screen == config.SCREEN_MAIN
+                             and not buttons.is_down(buttons_mod.A)),
+)
+print("buttons backend:", buttons.backend)
 
 
-def read_a():
-    return not btn_a.value
-
-
-def read_b():
-    return btn_b.value
-
-
-def read_c():
-    return btn_c.value
-
-
-def _poll_buttons():
-    """Poll buttons B and C during blocking operations (graph redraw, QR
-    generation, cloud retry pauses) so a press is never dropped — it is
-    latched as pending and handled on the next main-loop pass.
-    Registered as runtime.poll_buttons."""
+def _busy(what, fn, *args):
+    """Run a blocking call with the busy indicator up, then drain any button
+    presses that arrived while we were away so they apply immediately."""
+    runtime.show_busy(what)
     try:
-        b = read_b()
-        if b and not state.prev_b:
-            state._btn_b_pending = True
-        state.prev_b = b
-        c = read_c()
-        if c and not state.prev_c:
-            state._btn_c_pending = True
-        state.prev_c = c
-    except Exception:
-        pass
+        return fn(*args)
+    finally:
+        runtime.clear_busy()
+        buttons.scan()
 
 
 def mode_name():
@@ -381,51 +375,24 @@ while True:
         W.status_label.text = ""
         state.status_timeout = 0.0
 
-    a_now = read_a()
-    b_now = read_b()
-    c_now = read_c()
+    # ── Buttons ─────────────────────────────────────────────────────
+    # Drain queued events and dispatch every action that became due, in
+    # order. A press that happened during a blocking call earlier in the
+    # previous pass shows up here and takes effect now.
+    for action in buttons.poll():
 
-    # A + B held together — physical-presence OTA unlock.
-    # Runs BEFORE the individual A/B handlers so the combo suppresses their
-    # hold actions (low-power toggle, regulatory screen) and their short
-    # presses. A (D0) and B (D1) are physically adjacent, and neither of
-    # their actions touches Wi-Fi — so C's Wi-Fi toggle can't be triggered
-    # by this gesture.
-    _ab_now = a_now and b_now
-    if _ab_now:
-        if state._ab_hold_start is None:
-            state._ab_hold_start = now
-            state._ab_hold_fired = False
-        # Suppress single-button hold + short-press actions while combo held.
-        state._btn_a_hold_fired = True
-        state._btn_b_hold_fired = True
-        if (not state._ab_hold_fired) and \
-           ((now - state._ab_hold_start) >= config.OTA_UNLOCK_HOLD_SECONDS):
-            state._ab_hold_fired = True
+        if action == buttons_mod.AB_HOLD:
+            # A + B held together — physical-presence OTA unlock.
             state.ota_unlock_until = now + config.OTA_UNLOCK_WINDOW_SECONDS
             ui.show_status("OTA unlocked for %d min" %
                            int(config.OTA_UNLOCK_WINDOW_SECONDS // 60))
-    else:
-        # Reset whenever the combo isn't fully held → requires a clean,
-        # continuous 3-second A+B hold.
-        state._ab_hold_start = None
-        state._ab_hold_fired = False
 
-    # D0 (A) — short press toggles °C/°F  |  hold 2 s → toggle LP mode.
-    # This mirrors button C (D2) which also uses short/long-press patterns.
-    if a_now and (not state.prev_a):
-        state._btn_a_hold_start = now
-        state._btn_a_hold_fired = False
-
-    if a_now and (state._btn_a_hold_start is not None) and (not state._btn_a_hold_fired):
-        if (now - state._btn_a_hold_start) >= config.LP_A_HOLD_SECONDS:
-            state._btn_a_hold_fired = True
+        elif action == buttons_mod.A_HOLD:
+            # A hold → toggle low-power mode.
             apply_energy_mode(not state.energy_mode)
             state.settings["energy_mode"] = state.energy_mode
 
-    if (not a_now) and state.prev_a:
-        # Button A released — process as short press if hold did not fire
-        if (state._btn_a_hold_start is not None) and (not state._btn_a_hold_fired):
+        elif action == buttons_mod.A_SHORT:
             if state.screen == config.SCREEN_REGULATORY:
                 # Any short press on regulatory screen returns to info screen.
                 state.screen = config.SCREEN_APINFO
@@ -437,77 +404,48 @@ while True:
                 state._save_deferred_ts = now + 1.5
                 ui.refresh_text()
                 ui.show_status("Temp: " + state.temp_mode)
-        state._btn_a_hold_start = None
-        state._btn_a_hold_fired = False
 
-    # D1 (B) — track hold start on rising edge (for regulatory screen on SCREEN_APINFO)
-    if b_now and (not state.prev_b):
-        state._btn_b_hold_start = now
-        state._btn_b_hold_fired = False
-
-    # D1 (B) — fire hold action: open regulatory screen when held on SCREEN_APINFO
-    if b_now and (state._btn_b_hold_start is not None) and (not state._btn_b_hold_fired):
-        if (now - state._btn_b_hold_start) >= config.B_HOLD_SECONDS:
-            if state.screen == config.SCREEN_APINFO:
-                state._btn_b_hold_fired = True
-                state.screen = config.SCREEN_REGULATORY
-                ui.update_visibility()
-
-    # D1 (B) — on release: handle short press or return from regulatory screen.
-    # Also handles presses captured during blocking ops via _btn_b_pending.
-    if (not b_now) and (state.prev_b or state._btn_b_pending):
-        state._btn_b_pending = False
-        if state.screen == config.SCREEN_REGULATORY:
-            # Any release on the regulatory screen returns to info screen.
-            state.screen = config.SCREEN_APINFO
+        elif action == buttons_mod.B_HOLD:
+            # Only produced on SCREEN_APINFO (guarded in Buttons).
+            state.screen = config.SCREEN_REGULATORY
             ui.update_visibility()
-            ui.refresh_apinfo_screen()
-        elif not state._btn_b_hold_fired:
-            # Existing short-press behaviour: APINFO → MAIN, or cycle display mode.
-            if state.screen == config.SCREEN_APINFO:
-                state.screen = config.SCREEN_MAIN
-                ui.update_visibility()
-            if state.screen == config.SCREEN_MAIN:
-                state.display_mode = (state.display_mode + 1) % 3
-                state.settings["display_mode"] = state.display_mode
-                state._save_deferred_ts = now + 1.5  # persist to flash shortly after, not during press
-                ui.update_visibility()
-                # If the user switched into graph mode, schedule a redraw rather than doing it immediately.
-                if state.display_mode == 2:
-                    state.graph_refresh_needed = True
-                ui.refresh_text()
-                ui.show_status("Mode: " + mode_name())
-        state._btn_b_hold_start = None
-        state._btn_b_hold_fired = False
 
-    # D2 (C) short press toggles screen, hold toggles Wi-Fi mode
-    if c_now and (not state.prev_c):
-        state.d2_hold_start = now
-        state.d2_hold_fired = False
+        elif action == buttons_mod.B_SHORT:
+            if state.screen == config.SCREEN_REGULATORY:
+                state.screen = config.SCREEN_APINFO
+                ui.update_visibility()
+                ui.refresh_apinfo_screen()
+            else:
+                # APINFO → MAIN, then always cycle the view on MAIN.
+                if state.screen == config.SCREEN_APINFO:
+                    state.screen = config.SCREEN_MAIN
+                    ui.update_visibility()
+                if state.screen == config.SCREEN_MAIN:
+                    state.display_mode = (state.display_mode + 1) % 3
+                    state.settings["display_mode"] = state.display_mode
+                    state._save_deferred_ts = now + 1.5  # persist shortly after, not during press
+                    ui.update_visibility()
+                    if state.display_mode == 2:
+                        state.graph_refresh_needed = True  # redraw deferred to idle
+                    ui.refresh_text()
+                    ui.show_status("Mode: " + mode_name())
 
-    if c_now and state.d2_hold_start is not None and (not state.d2_hold_fired):
-        if (now - state.d2_hold_start) >= config.D2_HOLD_SECONDS:
-            state.d2_hold_fired = True
+        elif action == buttons_mod.C_HOLD:
             # Toggle Wi-Fi mode
             if state.wifi_mode == config.WIFI_MODE_STA:
                 ui.show_status("Switching to AP...")
                 state._sta_fallback = False  # user explicitly chose AP; don't auto-switch back
-                wifi_mod.switch_to_ap(force_restart=True)
+                _busy("wifi", wifi_mod.switch_to_ap, True)
             else:
                 ui.show_status("Switching to STA...")
-                if not wifi_mod.switch_to_sta():
+                if not _busy("wifi", wifi_mod.switch_to_sta):
                     ui.show_status("STA failed; AP")
-                    wifi_mod.switch_to_ap(force_restart=True)
+                    _busy("wifi", wifi_mod.switch_to_ap, True)
 
-    if (not c_now) and (state.prev_c or state._btn_c_pending):
-        # released (or press was latched during a blocking operation)
-        _c_was_pending = state._btn_c_pending
-        state._btn_c_pending = False
-        if _c_was_pending or (state.d2_hold_start is not None and (not state.d2_hold_fired)):
-            # short press behaviour:
-            #   - When on SCREEN_REGULATORY: return to info screen.
-            #   - When on SCREEN_APINFO in AP mode: cycle QR page (0->1->0).
-            #   - Otherwise: toggle between SCREEN_MAIN and SCREEN_APINFO.
+        elif action == buttons_mod.C_SHORT:
+            # - On SCREEN_REGULATORY: return to info screen.
+            # - On SCREEN_APINFO in AP mode: cycle QR page (0->1->0).
+            # - Otherwise: toggle between SCREEN_MAIN and SCREEN_APINFO.
             if state.screen == config.SCREEN_REGULATORY:
                 state.screen = config.SCREEN_APINFO
                 ui.update_visibility()
@@ -520,21 +458,14 @@ while True:
                 ui.update_visibility()
                 if state.screen == config.SCREEN_APINFO:
                     state._qr_page = 0           # always start at page 0 (WiFi QR) when entering
-                    # RC-50: switch the screen NOW (labels are cheap);
-                    # the QR builds from the main loop a moment later —
-                    # and is usually a cache hit, so nothing rebuilds.
+                    # Switch the screen NOW (labels are cheap); the QR builds
+                    # from the main loop a moment later (usually a cache hit).
                     ui.refresh_apinfo_screen()
                     state.qr_refresh_needed = True
                 else:
                     ui.refresh_text()
                     if state.display_mode == 2:
                         state.graph_refresh_needed = True
-        state.d2_hold_start = None
-        state.d2_hold_fired = False
-
-    state.prev_a = a_now
-    state.prev_b = b_now
-    state.prev_c = c_now
 
     _wifi_ind_interval = 10.0 if state.energy_mode else 1.0
     if now - last_wifi_ind_refresh > _wifi_ind_interval:
@@ -668,7 +599,7 @@ while True:
             due = False
         if due:
             state.last_ntp_attempt = now
-            ntp_mod.ntp_sync(force=False)
+            _busy("ntp", ntp_mod.ntp_sync, False)
 
         # Cloud upload (periodic) - STA only
         if state.cloud_enabled and state.wifi_mode == config.WIFI_MODE_STA:
@@ -692,7 +623,7 @@ while True:
                     "scd_serial": state.scd_serial_str,
                     "board_id": state.board_id_str,
                 }
-                ok = cloud_mod.cloud_send(payload)
+                ok = _busy("cloud", cloud_mod.cloud_send, payload)
                 if ok:
                     state.cloud_failures = 0
                     state.cloud_last_ok = time.monotonic()
@@ -708,7 +639,7 @@ while True:
                 mqtt_interval = mqtt_interval * config.ENERGY_LP_MQTT_MULT
             if now - state.last_mqtt_send > mqtt_interval:
                 state.last_mqtt_send = now
-                mqtt_mod.publish_to_mqtt()
+                _busy("mqtt", mqtt_mod.publish_to_mqtt)
 
         # Adafruit IO publish (periodic) - STA only
         aio_enabled = state.settings.get("aio_enabled", False)
@@ -718,7 +649,7 @@ while True:
                 aio_interval = aio_interval * config.ENERGY_LP_AIO_MULT
             if now - state.last_aio_send > aio_interval:
                 state.last_aio_send = now
-                mqtt_mod.publish_to_adafruit_io()
+                _busy("aio", mqtt_mod.publish_to_adafruit_io)
 
     # If we're in AP mode but the HTTP socket died, restart it.
     try:
@@ -741,11 +672,11 @@ while True:
             state.last_sta_auto_retry = now
             state._sta_auto_retry_count += 1
             ui.show_status("WiFi: connecting...")
-            if wifi_mod.switch_to_sta():
+            if _busy("wifi", wifi_mod.switch_to_sta):
                 state._sta_fallback = False
                 state._sta_auto_retry_count = 0
             else:
-                wifi_mod.switch_to_ap()
+                _busy("wifi", wifi_mod.switch_to_ap)
 
     # Deferred QR rebuild (RC-50): runs when the loop is idle so screen
     # switches stay instant. Usually a cache no-op after the first build.
@@ -833,4 +764,5 @@ while True:
         settings_mod.save_settings()
 
     web.handle_http_client()
+    buttons.scan()  # pick up anything that arrived while serving the web UI
     time.sleep(config.ENERGY_LP_SLEEP_S if state.energy_mode else 0.01)

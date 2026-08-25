@@ -183,6 +183,37 @@ twc_t_label.anchor_point = (1.0, 0.0)
 twc_t_label.anchored_position = (display.width - 2 - _TWC_GAP * 2, 2)
 main_group.append(twc_t_label)
 
+# ── Busy indicator (RC-52) ──────────────────────────────────────────
+# Shown while the main loop is inside a blocking operation (cloud POST,
+# MQTT, NTP, Wi-Fi reconnect, serving a web page). Button presses made
+# during that time are queued — not lost — and applied as soon as the
+# operation returns; this label tells the user *why* the screen paused.
+# Wong-palette amber so it reads for colour-blind users.
+_BUSY_COLOR = 0xE69F00
+busy_label = label.Label(terminalio.FONT, text="", color=_BUSY_COLOR, scale=1)
+busy_label.anchor_point = (1.0, 0.0)
+busy_label.anchored_position = (display.width - 2 - _TWC_GAP * 3 - 4, 2)
+main_group.append(busy_label)
+
+
+def show_busy(what):
+    """Mark the UI busy with a short reason ('cloud', 'mqtt', 'ntp', 'wifi',
+    'web') and push it to the panel *now*, before the blocking call starts."""
+    try:
+        busy_label.text = what
+        # Force a frame: auto-refresh may not get a turn before we block.
+        display.refresh(minimum_frames_per_second=0)
+    except Exception:
+        pass
+
+
+def clear_busy():
+    try:
+        if busy_label.text:
+            busy_label.text = ""
+    except Exception:
+        pass
+
 
 def show_status(msg):
     status_label.text = msg

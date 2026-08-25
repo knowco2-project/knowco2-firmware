@@ -71,8 +71,6 @@ graph_refresh_needed = False
 # generation (~1s of pure-Python miniqr work) runs from the main loop
 # when idle, exactly like the graph redraw.
 qr_refresh_needed = False
-# C presses captured during blocking operations (mirrors _btn_b_pending).
-_btn_c_pending = False
 # payload -> module count cache so QR sizing never regenerates a code.
 _qr_mod_cache = {}
 sensor_frozen_shown = False
@@ -96,29 +94,18 @@ scd_recoveries = 0
 last_scd_reset = 0.0
 last_scd_sample_ts = 0.0
 
-# ── Button edge-tracking ────────────────────────────────────────────
-prev_a = False
-prev_b = False
-prev_c = False
-d2_hold_start = None
-d2_hold_fired = False
-
+# ── Buttons ─────────────────────────────────────────────────────────
+# RC-52: edge-tracking fields (prev_a/b/c, *_hold_*, *_pending) retired —
+# gesture state now lives in knowco2.buttons.Buttons (queued events).
 # A+B combo hold → physical-presence OTA unlock window.
 # ota_unlock_until is a time.monotonic() deadline; 0.0 means locked.
 ota_unlock_until = 0.0
-_ab_hold_start = None
-_ab_hold_fired = False
 
 # ── Safe-mode recovery diagnostics ──────────────────────────────────
 # Consecutive safemode.py auto-recoveries that preceded this boot
 # (0 = clean boot). Counter cleared after stable uptime.
 safe_mode_recoveries = 0
 _recovery_cleared = False
-_btn_a_hold_start = None
-_btn_a_hold_fired = False
-_btn_b_hold_start = None
-_btn_b_hold_fired = False
-_btn_b_pending = False
 
 # ── Energy / low-power mode ─────────────────────────────────────────
 energy_mode = False

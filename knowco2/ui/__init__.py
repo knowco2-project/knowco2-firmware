@@ -8,7 +8,7 @@ from . import widgets  # noqa: F401  (creates the display objects at import)
 from . import screens  # noqa: F401
 
 # Re-export the screen functions at package level for convenient wiring.
-from .widgets import show_status  # noqa: F401
+from .widgets import show_status, show_busy, clear_busy  # noqa: F401
 from .screens import (  # noqa: F401
     color_for_co2, graph_color_index_for_co2, apply_color_scheme,
     apply_alert_colors, compute_trend_arrow, refresh_text,

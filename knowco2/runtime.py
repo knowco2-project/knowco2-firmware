@@ -49,6 +49,11 @@ compute_trend_arrow = _default_compute_trend_arrow
 # press is never silently dropped. Registered by code.py.
 poll_buttons = _noop
 
+# Busy indicator: lower layers may bracket a long blocking call with
+# show_busy("cloud") ... clear_busy() so the user sees why the screen paused.
+show_busy = _noop
+clear_busy = _noop
+
 # --- web hook ---
 def _default_start_http_server():
     return False
