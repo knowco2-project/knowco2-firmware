@@ -142,9 +142,15 @@ jobs:
       # ------------------------------------------------------------------ #
       - name: Fetch mpy-cross (CircuitPython)
         run: |
+          # Recent CircuitPython releases no longer attach mpy-cross to the
+          # GitHub release (only 2 auto-generated source assets are there).
+          # The real binaries live in Adafruit's own S3 bucket, one per
+          # platform/version, e.g.:
+          #   bin/mpy-cross/linux-amd64/mpy-cross-linux-amd64-10.2.1.static
+          # Confirmed present for 10.2.1 by listing the bucket directly.
           CP_VERSION="10.2.1"
           curl -fL -o mpy-cross \
-            "https://github.com/adafruit/circuitpython/releases/download/${CP_VERSION}/mpy-cross.static-amd64-linux"
+            "https://adafruit-circuit-python.s3.amazonaws.com/bin/mpy-cross/linux-amd64/mpy-cross-linux-amd64-${CP_VERSION}.static"
           chmod +x mpy-cross
           ./mpy-cross --version
 
