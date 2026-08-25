@@ -53,6 +53,7 @@ jobs:
           python3 test_cloud_heal.py
           python3 test_snappy_ui.py
           python3 test_graph_perf.py
+          python3 test_buttons.py
 
       # ------------------------------------------------------------------ #
       # Gate: the tag must match the firmware version actually in the tree

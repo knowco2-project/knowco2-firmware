@@ -147,16 +147,16 @@ state.cached_pct = 92             # one value changes -> exactly one write
 screens.refresh_apinfo_screen()
 check("T5 one change = one label write", calls["label_sets"] == first_sets + 1)
 
-# T6: pending-press contract -- the C handler consumes _btn_c_pending
+# T6: RC-52 button contract -- presses are queued (knowco2.buttons), the
+# main loop dispatches actions in order, and the QR build stays deferred.
 # (code.py needs real hardware to import; verify the source contract)
 code_src = open("../code.py").read()
-check("T6 poll captures C edges", "state._btn_c_pending = True" in code_src)
-check("T6 C handler consumes pending",
-      "(not c_now) and (state.prev_c or state._btn_c_pending)" in code_src)
+check("T6 presses are queued (RC-52 Buttons)", "for action in buttons.poll():" in code_src)
+check("T6 C short-press dispatched", "buttons_mod.C_SHORT" in code_src)
 check("T6 deferred QR handler present in main loop",
       "state.qr_refresh_needed and state.screen == config.SCREEN_APINFO" in code_src)
 check("T6 no synchronous QR calls left on button path",
-      "ui.make_or_update_qrs" not in code_src.split("def _poll_buttons")[1].split("# Deferred QR rebuild")[0])
+      "ui.make_or_update_qrs" not in code_src.split("for action in buttons.poll():")[1].split("# Deferred QR rebuild")[0])
 
 print()
 if fails:
