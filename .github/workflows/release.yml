@@ -130,6 +130,74 @@ jobs:
           unzip -l "knowco2-full-${VERSION}.zip"
 
       # ------------------------------------------------------------------ #
+      # Fetch mpy-cross matching this board's CircuitPython version. Used
+      # below to compile knowco2/ to bytecode for the space-optimized
+      # Production ZIP. This MUST be CircuitPython's own mpy-cross, not
+      # pip/PyPI's "mpy-cross" package — that one targets MicroPython.
+      # Both emit .mpy format version 6, but CircuitPython's build stamps
+      # files with magic byte "C" and MicroPython's with "M" — they are
+      # not interchangeable, and the board will refuse (or worse, mis-load)
+      # a "M"-tagged file. If CircuitPython is upgraded, bump CP_VERSION
+      # here to match (and the .uf2 under circuitpython-release/).
+      # ------------------------------------------------------------------ #
+      - name: Fetch mpy-cross (CircuitPython)
+        run: |
+          CP_VERSION="10.2.1"
+          curl -fL -o mpy-cross \
+            "https://github.com/adafruit/circuitpython/releases/download/${CP_VERSION}/mpy-cross.static-amd64-linux"
+          chmod +x mpy-cross
+          ./mpy-cross --version
+
+      # ------------------------------------------------------------------ #
+      # Package 2b — Production ZIP
+      # Space-optimized fresh-install package: knowco2/ is compiled to
+      # .mpy bytecode instead of shipped as .py source, so the whole
+      # package fits the approved 960 KB CIRCUITPY budget. This is the
+      # package the KnowCO2 Flasher looks for when flashing a fresh device.
+      # code.py / boot.py stay as .py — they're the entry point, and
+      # code.py is validated as text during OTA installs.
+      # ------------------------------------------------------------------ #
+      - name: Build Production ZIP
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          STAGING="staging-production"
+          mkdir -p "$STAGING/lib"
+
+          cp code.py boot.py "$STAGING/"
+          cp -r knowco2 "$STAGING/"
+          cp -r assets "$STAGING/"
+
+          # Compile the package to bytecode, then drop the .py source
+          find "$STAGING/knowco2" -name "*.py" | while read -r f; do
+            ./mpy-cross "$f" -o "${f%.py}.mpy"
+            rm "$f"
+          done
+
+          # Gate: every module must have compiled — never ship a partially
+          # compiled package
+          remaining=$(find "$STAGING/knowco2" -name "*.py" | wc -l)
+          if [ "$remaining" -ne 0 ]; then
+            echo "::error::${remaining} knowco2/*.py file(s) failed to compile to .mpy"
+            find "$STAGING/knowco2" -name "*.py"
+            exit 1
+          fi
+
+          # Use the same lib snapshot as the Full ZIP
+          LIB_DIR=$(ls -d lib-*-release 2>/dev/null | sort -r | head -1)
+          if [ -z "$LIB_DIR" ]; then
+            LIB_DIR="lib"
+          fi
+          echo "Using lib directory: $LIB_DIR"
+          cp -r "$LIB_DIR/." "$STAGING/lib/"
+
+          cd "$STAGING"
+          zip -r "../knowco2-production-${VERSION}.zip" .
+          cd ..
+
+          echo "Production ZIP contents:"
+          unzip -l "knowco2-production-${VERSION}.zip"
+
+      # ------------------------------------------------------------------ #
       # Package 3 — Source ZIP
       # Clean source tree without git internals, build artifacts, or
       # macOS junk — useful for developers who want to read / modify code.
@@ -163,6 +231,7 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           sha256sum \
             "knowco2-ota-${VERSION}.zip" \
+            "knowco2-production-${VERSION}.zip" \
             "knowco2-full-${VERSION}.zip" \
             "knowco2-source-${VERSION}.zip" \
             > "knowco2-${VERSION}-checksums.txt"
@@ -200,7 +269,8 @@ jobs:
 
           | File | Use when |
           |---|---|
-          | `knowco2-full-*.zip` | Fresh install or complete upgrade — unzip onto your `CIRCUITPY` drive |
+          | `knowco2-production-*.zip` | Fresh install on a factory/blank device — unzip onto your `CIRCUITPY` drive. Space-optimized (knowco2/ compiled to .mpy) to fit the 960 KB CIRCUITPY budget. **Use this with the KnowCO2 Flasher.** |
+          | `knowco2-full-*.zip` | Fresh install or upgrade for developers — same contents as Production, but knowco2/ is plain, editable `.py` source. Larger; may not fit factory-blank boards. |
           | `knowco2-ota-*.zip` | OTA upgrade — upload at `http://knowco2-XXXX.local/update` |
           | `knowco2-source-*.zip` | Source code — for developers who want to read or modify the firmware |
 
@@ -212,6 +282,7 @@ jobs:
           See `*-checksums.txt` attached below to verify your download.
           NOTES
           )" \
+            "knowco2-production-${VERSION}.zip" \
             "knowco2-full-${VERSION}.zip" \
             "knowco2-ota-${VERSION}.zip" \
             "knowco2-source-${VERSION}.zip" \
@@ -226,6 +297,7 @@ jobs:
           echo "=========================================="
           echo "  Release $VERSION published successfully"
           echo "=========================================="
+          echo "  Production ZIP: knowco2-production-${VERSION}.zip"
           echo "  OTA ZIP:    knowco2-ota-${VERSION}.zip"
           echo "  Full ZIP:   knowco2-full-${VERSION}.zip"
           echo "  Source ZIP: knowco2-source-${VERSION}.zip"
