@@ -3,6 +3,8 @@ import displayio
 import digitalio
 import storage
 import time
+import usb_hid
+import usb_midi
 
 # -----------------------------------------------------------------------------
 # boot.py
@@ -10,6 +12,9 @@ import time
 # Default behavior:
 #   - Hide the USB mass-storage drive so the board does not show as CIRCUITPY
 #   - Keep the filesystem available for normal CircuitPython file writes
+#   - Disable USB HID (keyboard/mouse) and MIDI. Neither is used by the
+#     firmware, and an enumerated HID keyboard makes iOS hide its on-screen
+#     keyboard whenever the device is plugged in for power.
 #
 # Override:
 #   - Hold D1 at power-up / reset to keep the USB drive visible
@@ -20,6 +25,17 @@ import time
 try:
     board.DISPLAY.rotation = 180
     board.DISPLAY.root_group = displayio.Group()
+except Exception:
+    pass
+
+# Unconditional: applies whether or not the D1 override is held. USB CDC
+# serial is left enabled so the REPL and print() debugging still work.
+try:
+    usb_hid.disable()
+except Exception:
+    pass
+try:
+    usb_midi.disable()
 except Exception:
     pass
 
