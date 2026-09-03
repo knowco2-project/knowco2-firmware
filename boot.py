@@ -3,33 +3,61 @@ import displayio
 import digitalio
 import storage
 import time
+import usb_cdc
 import usb_hid
 import usb_midi
 
+try:
+    import supervisor
+except Exception:
+    supervisor = None
+
 # -----------------------------------------------------------------------------
-# boot.py
+# boot.py — KnowCO2 USB profile
 #
-# Default behavior:
-#   - Hide the USB mass-storage drive so the board does not show as CIRCUITPY
-#   - Keep the filesystem available for normal CircuitPython file writes
-#   - Disable USB HID (keyboard/mouse) and MIDI. Neither is used by the
-#     firmware, and an enumerated HID keyboard makes iOS hide its on-screen
-#     keyboard whenever the device is plugged in for power.
+# Normal boot:
+#   - Hide CIRCUITPY mass storage
+#   - Expose the existing CircuitPython console plus a dedicated data CDC port
+#   - Disable HID and MIDI
 #
-# Override:
-#   - Hold D1 at power-up / reset to keep the USB drive visible
+# Maintenance boot (hold button B / D1 during reset):
+#   - Keep CIRCUITPY visible
+#   - Expose the console only; disable the data CDC port
+#
+# ESP32-S3 effectively has four usable endpoint pairs. Two CDC interfaces use
+# all four, so mass storage cannot coexist with both. Maintenance mode therefore
+# uses console + CIRCUITPY, while normal mode uses console + data and no drive.
+#
+# TRANSITION NOTE:
+# Keep CONSOLE_IN_NORMAL_MODE=True until knowco2-flasher and the production
+# tester have migrated from console log parsing to the versioned USB data API.
+# After that migration, set it False so retail devices expose only the safe data
+# port during normal operation; holding B will still restore the console.
 # -----------------------------------------------------------------------------
 
-# Suppress the CircuitPython REPL terminal on the built-in TFT as early as possible,
-# and set the correct rotation so no upside-down text is visible during boot.
+CONSOLE_IN_NORMAL_MODE = True
+OVERRIDE_PIN = board.D1
+
+# Give desktop operating systems a stable human-readable identity without
+# claiming a custom USB VID/PID. A production VID/PID decision can be made
+# separately once the protocol is validated on hardware.
+if supervisor is not None:
+    try:
+        supervisor.set_usb_identification(
+            manufacturer="KnowCO2 LLC",
+            product="KnowCO2 Monitor",
+        )
+    except Exception:
+        pass
+
+# Suppress CircuitPython terminal text on the built-in TFT as early as possible.
 try:
     board.DISPLAY.rotation = 180
     board.DISPLAY.root_group = displayio.Group()
 except Exception:
     pass
 
-# Unconditional: applies whether or not the D1 override is held. USB CDC
-# serial is left enabled so the REPL and print() debugging still work.
+# KnowCO2 does not use USB keyboard/mouse or MIDI interfaces.
 try:
     usb_hid.disable()
 except Exception:
@@ -39,34 +67,41 @@ try:
 except Exception:
     pass
 
-OVERRIDE_PIN = board.D1
-
 override = None
-
+maintenance_mode = False
 try:
     override = digitalio.DigitalInOut(OVERRIDE_PIN)
     override.switch_to_input(pull=digitalio.Pull.DOWN)
-
-    # Give the pin a moment to settle after power-up.
     time.sleep(0.05)
-
-    if override.value:
-        # Override held: host (Mac/PC) gets write access by default. Do not remount.
-        pass
-    else:
-        # Default behavior: make sure the filesystem is writable, then hide USB storage.
-        try:
-            storage.remount("/", readonly=False)
-        except Exception:
-            pass
-        try:
-            storage.disable_usb_drive()
-        except Exception:
-            pass
-
+    maintenance_mode = bool(override.value)
 finally:
     try:
         if override is not None:
             override.deinit()
+    except Exception:
+        pass
+
+# Normal mode keeps the existing console during this development phase and adds
+# the dedicated data CDC endpoint used by Linux/macOS/Windows applications.
+# Maintenance mode disables data so CIRCUITPY can remain available.
+try:
+    if maintenance_mode:
+        usb_cdc.enable(console=True, data=False)
+    else:
+        usb_cdc.enable(console=CONSOLE_IN_NORMAL_MODE, data=True)
+except Exception:
+    pass
+
+if maintenance_mode:
+    # Host gets normal CIRCUITPY access. Do not remount or hide the drive.
+    pass
+else:
+    # Firmware owns the filesystem so settings and calibration records can save.
+    try:
+        storage.remount("/", readonly=False)
+    except Exception:
+        pass
+    try:
+        storage.disable_usb_drive()
     except Exception:
         pass
