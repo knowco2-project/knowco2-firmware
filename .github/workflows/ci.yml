@@ -40,6 +40,7 @@ jobs:
           python3 test_snappy_ui.py
           python3 test_graph_perf.py
           python3 test_buttons.py
+          python3 test_web_onboarding.py
 
   ota-staged-install:
     name: OTA staged install
