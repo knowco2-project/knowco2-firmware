@@ -24,10 +24,22 @@ jobs:
         with:
           fetch-depth: 0   # full history + tags for the version-bump guard
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Verify release licensing files
         run: |
           test -s LICENSE
           test -s THIRD_PARTY_NOTICES.md
+
+      # The dependency lock is the sole source of truth for the board runtime,
+      # vendored library tree, bundle asset hashes, and mpy-cross source.
+      - name: Verify and export locked firmware dependencies
+        run: |
+          python3 tools/firmware_dependencies.py verify
+          python3 tools/firmware_dependencies.py github-env --output "$GITHUB_ENV"
 
       # ------------------------------------------------------------------ #
       # Determine the release version
@@ -40,7 +52,11 @@ jobs:
           else
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z._-]*$'; then
+            echo "::error::Release version must look like v1.2.3"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building release: $VERSION"
 
       # ------------------------------------------------------------------ #
@@ -52,23 +68,18 @@ jobs:
       - name: Compile all firmware modules
         run: python3 -m py_compile $(find . -name "*.py" -not -path "./tests/*" -not -path "./.git/*")
 
-      # py_compile writes __pycache__/*.pyc next to every module it checks
-      # (PYTHONDONTWRITEBYTECODE does NOT suppress this — that only
-      # affects import-time caching, not py_compile's explicit output).
-      # These must not leak into any staged package below: each one adds
-      # bytes and a file-count entry that eats into the CIRCUITPY budget
-      # for nothing. Confirmed by hand that py_compile creates these even
-      # with the env var set, so clean up explicitly instead.
       - name: Remove __pycache__ created by the compile gate
         run: find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
       - name: Run behavioral test suites
         working-directory: tests
         run: |
+          python3 test_firmware_dependencies.py
           python3 test_cloud_heal.py
           python3 test_snappy_ui.py
           python3 test_graph_perf.py
           python3 test_buttons.py
+          python3 test_web_onboarding.py
 
       # ------------------------------------------------------------------ #
       # Gate: the tag must match the firmware version actually in the tree
@@ -78,11 +89,9 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           if ! grep -q "FIRMWARE_VERSION" knowco2/version.py; then
-            echo "::error::knowco2/version.py missing FIRMWARE_VERSION"; exit 1
+            echo "::error::knowco2/version.py missing FIRMWARE_VERSION"
+            exit 1
           fi
-          if git log -1 --format=%s | grep -qi "release"; then :; fi
-          # The version string must have changed in the commit history
-          # reachable from this tag relative to the previous release tag.
           PREV=$(git tag --sort=-creatordate | grep -v "^${VERSION}$" | head -1 || true)
           if [ -n "$PREV" ] && git diff --quiet "$PREV" HEAD -- knowco2/version.py; then
             echo "::error::knowco2/version.py unchanged since $PREV — bump FIRMWARE_VERSION before tagging $VERSION"
@@ -90,16 +99,77 @@ jobs:
           fi
           echo "version.py check passed"
 
+      - name: Get firmware version string
+        id: fw_version
+        run: |
+          FW_VER=$(python3 - <<'PY'
+          import re
+          content = open("knowco2/version.py", encoding="utf-8").read()
+          match = re.search(r"FIRMWARE_VERSION\s*=\s*[\"'](.*?)[\"']", content)
+          print(match.group(1) if match else "unknown")
+          PY
+          )
+          echo "FW_VER=$FW_VER" >> "$GITHUB_OUTPUT"
+          echo "Firmware version string: $FW_VER"
+
+      # Generate the compatibility contract consumed by selectable flasher
+      # profiles and the traceability manifest embedded in every package.
+      - name: Generate release dependency manifests
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          FW_VER="${{ steps.fw_version.outputs.FW_VER }}"
+          python3 tools/firmware_dependencies.py compatibility \
+            --release-tag "$VERSION" \
+            --output "knowco2-compatibility-${VERSION}.json"
+          python3 tools/firmware_dependencies.py build-manifest \
+            --release-tag "$VERSION" \
+            --firmware-version "$FW_VER" \
+            --output "knowco2-build-${VERSION}.json"
+
+      # ------------------------------------------------------------------ #
+      # Build mpy-cross from the exact locked CircuitPython and Huffman
+      # commits. Keep the compiler outside the repository so it cannot leak
+      # into the source archive.
+      # ------------------------------------------------------------------ #
+      - name: Build locked CircuitPython mpy-cross
+        run: |
+          set -euo pipefail
+          BUILD_ROOT="${RUNNER_TEMP:-/tmp}/knowco2-mpy-cross-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          CP_SOURCE="$BUILD_ROOT/circuitpython"
+          rm -rf "$BUILD_ROOT"
+          mkdir -p "$CP_SOURCE"
+
+          git -C "$CP_SOURCE" init -q
+          git -C "$CP_SOURCE" remote add origin "$KNOWCO2_MPY_CROSS_SOURCE_REPOSITORY"
+          git -C "$CP_SOURCE" fetch --depth 1 origin "$KNOWCO2_MPY_CROSS_SOURCE_COMMIT"
+          git -C "$CP_SOURCE" checkout --detach -q FETCH_HEAD
+          test "$(git -C "$CP_SOURCE" rev-parse HEAD)" = "$KNOWCO2_MPY_CROSS_SOURCE_COMMIT"
+
+          mkdir -p "$CP_SOURCE/tools/huffman"
+          git -C "$CP_SOURCE/tools/huffman" init -q
+          git -C "$CP_SOURCE/tools/huffman" remote add origin "$KNOWCO2_HUFFMAN_REPOSITORY"
+          git -C "$CP_SOURCE/tools/huffman" fetch --depth 1 origin "$KNOWCO2_HUFFMAN_COMMIT"
+          git -C "$CP_SOURCE/tools/huffman" checkout --detach -q FETCH_HEAD
+          test "$(git -C "$CP_SOURCE/tools/huffman" rev-parse HEAD)" = "$KNOWCO2_HUFFMAN_COMMIT"
+
+          make -C "$CP_SOURCE/mpy-cross" -j2
+          MPY_CROSS_BIN="$CP_SOURCE/mpy-cross/build/mpy-cross"
+          test -x "$MPY_CROSS_BIN"
+          "$MPY_CROSS_BIN" --version | tee "$BUILD_ROOT/mpy-cross-version.txt"
+          grep -F "$KNOWCO2_MPY_CROSS_VERSION" "$BUILD_ROOT/mpy-cross-version.txt"
+          echo "KNOWCO2_MPY_CROSS_BIN=$MPY_CROSS_BIN" >> "$GITHUB_ENV"
+
       # ------------------------------------------------------------------ #
       # Package 1 — OTA ZIP
-      # What the user uploads to http://knowco2-XXXX.local/update
-      # Contains everything except the lib/ directory (smaller download;
-      # lib rarely changes between releases).
+      # Contains firmware/application files but deliberately leaves lib/
+      # unchanged. The embedded build manifest identifies the required
+      # library_set_id so release tooling can block incompatible combinations.
       # ------------------------------------------------------------------ #
       - name: Build OTA ZIP
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           STAGING="staging-ota"
+          rm -rf "$STAGING"
           mkdir -p "$STAGING"
 
           cp code.py boot.py "$STAGING/"
@@ -108,25 +178,24 @@ jobs:
           mkdir -p "$STAGING/assets/legal"
           cp LICENSE "$STAGING/assets/legal/LICENSE.txt"
           cp THIRD_PARTY_NOTICES.md "$STAGING/assets/legal/THIRD_PARTY_NOTICES.md"
+          cp dependencies/firmware-build-lock.json "$STAGING/assets/legal/FIRMWARE_BUILD_LOCK.json"
+          cp "knowco2-build-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_BUILD_MANIFEST.json"
+          cp "knowco2-compatibility-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_COMPATIBILITY.json"
 
           cd "$STAGING"
           zip -r "../knowco2-ota-${VERSION}.zip" .
           cd ..
-
-          echo "OTA ZIP contents:"
           unzip -l "knowco2-ota-${VERSION}.zip"
 
       # ------------------------------------------------------------------ #
-      # Package 2 — Dev ZIP (editable source)
-      # For developers who want to edit knowco2/*.py live on the device
-      # over USB without recompiling. NOT what factory/production flashing
-      # should use — see Package 2b below, which is what the KnowCO2
-      # Flasher actually fetches under the name "full".
+      # Package 2 — Dev ZIP (editable application source plus the exact
+      # locked precompiled library snapshot).
       # ------------------------------------------------------------------ #
       - name: Build Dev ZIP
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           STAGING="staging-dev"
+          rm -rf "$STAGING"
           mkdir -p "$STAGING/lib"
 
           cp code.py boot.py "$STAGING/"
@@ -135,63 +204,29 @@ jobs:
           mkdir -p "$STAGING/assets/legal"
           cp LICENSE "$STAGING/assets/legal/LICENSE.txt"
           cp THIRD_PARTY_NOTICES.md "$STAGING/assets/legal/THIRD_PARTY_NOTICES.md"
+          cp dependencies/firmware-build-lock.json "$STAGING/assets/legal/FIRMWARE_BUILD_LOCK.json"
+          cp "knowco2-build-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_BUILD_MANIFEST.json"
+          cp "knowco2-compatibility-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_COMPATIBILITY.json"
 
-          # Use the versioned lib snapshot if present, otherwise fall back to lib/
-          LIB_DIR=$(ls -d lib-*-release 2>/dev/null | sort -r | head -1)
-          if [ -z "$LIB_DIR" ]; then
-            LIB_DIR="lib"
-          fi
-          echo "Using lib directory: $LIB_DIR"
-          cp -r "$LIB_DIR/." "$STAGING/lib/"
+          echo "Using locked lib directory: $KNOWCO2_LIB_DIR"
+          cp -r "$KNOWCO2_LIB_DIR/." "$STAGING/lib/"
 
           cd "$STAGING"
           zip -r "../knowco2-dev-${VERSION}.zip" .
           cd ..
-
-          echo "Dev ZIP contents:"
           unzip -l "knowco2-dev-${VERSION}.zip"
 
       # ------------------------------------------------------------------ #
-      # Fetch mpy-cross matching this board's CircuitPython version. Used
-      # below to compile knowco2/ to bytecode for the space-optimized
-      # Production ZIP. This MUST be CircuitPython's own mpy-cross, not
-      # pip/PyPI's "mpy-cross" package — that one targets MicroPython.
-      # Both emit .mpy format version 6, but CircuitPython's build stamps
-      # files with magic byte "C" and MicroPython's with "M" — they are
-      # not interchangeable, and the board will refuse (or worse, mis-load)
-      # a "M"-tagged file. If CircuitPython is upgraded, bump CP_VERSION
-      # here to match (and the .uf2 under circuitpython-release/).
-      # ------------------------------------------------------------------ #
-      - name: Fetch mpy-cross (CircuitPython)
-        run: |
-          # Recent CircuitPython releases no longer attach mpy-cross to the
-          # GitHub release (only 2 auto-generated source assets are there).
-          # The real binaries live in Adafruit's own S3 bucket, one per
-          # platform/version, e.g.:
-          #   bin/mpy-cross/linux-amd64/mpy-cross-linux-amd64-10.2.1.static
-          # Confirmed present for 10.2.1 by listing the bucket directly.
-          CP_VERSION="10.2.1"
-          curl -fL -o mpy-cross \
-            "https://adafruit-circuit-python.s3.amazonaws.com/bin/mpy-cross/linux-amd64/mpy-cross-linux-amd64-${CP_VERSION}.static"
-          chmod +x mpy-cross
-          ./mpy-cross --version
-
-      # ------------------------------------------------------------------ #
-      # Package 2b — Full ZIP (space-optimized, factory install)
-      # knowco2/ is compiled to .mpy bytecode instead of shipped as .py
-      # source, so the whole package fits the approved 960 KB CIRCUITPY
-      # budget. This ships as knowco2-full-*.zip because the KnowCO2
-      # Flasher's source policy fetches "latest published KnowCO2 full
-      # release" by that exact name — it does not know about "production"
-      # or "dev" as package types. If that Flasher policy ever changes,
-      # revisit this naming.
-      # code.py / boot.py stay as .py — they're the entry point, and
-      # code.py is validated as text during OTA installs.
+      # Package 2b — Full ZIP (space-optimized factory/manual install).
+      # KnowCO2 application modules are compiled with the exact locked
+      # mpy-cross; version.py remains readable for installation validation.
       # ------------------------------------------------------------------ #
       - name: Build Full ZIP
         run: |
+          set -euo pipefail
           VERSION="${{ steps.version.outputs.VERSION }}"
           STAGING="staging-full"
+          rm -rf "$STAGING"
           mkdir -p "$STAGING/lib"
 
           cp code.py boot.py "$STAGING/"
@@ -200,56 +235,59 @@ jobs:
           mkdir -p "$STAGING/assets/legal"
           cp LICENSE "$STAGING/assets/legal/LICENSE.txt"
           cp THIRD_PARTY_NOTICES.md "$STAGING/assets/legal/THIRD_PARTY_NOTICES.md"
+          cp dependencies/firmware-build-lock.json "$STAGING/assets/legal/FIRMWARE_BUILD_LOCK.json"
+          cp "knowco2-build-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_BUILD_MANIFEST.json"
+          cp "knowco2-compatibility-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_COMPATIBILITY.json"
 
-          # Compile the package to bytecode, then drop the .py source.
-          # version.py is exempted: the KnowCO2 Flasher (and our own
-          # "Get firmware version string" step above) reads it as plain
-          # text to find FIRMWARE_VERSION before/after flashing. It's
-          # ~700 bytes — leaving it uncompiled costs nothing.
-          find "$STAGING/knowco2" -name "*.py" ! -name "version.py" | while read -r f; do
-            ./mpy-cross "$f" -o "${f%.py}.mpy"
-            rm "$f"
-          done
+          while IFS= read -r -d '' file; do
+            "$KNOWCO2_MPY_CROSS_BIN" "$file" -o "${file%.py}.mpy"
+            rm "$file"
+          done < <(find "$STAGING/knowco2" -name "*.py" ! -name "version.py" -print0)
 
-          # Gate: every module except version.py must have compiled —
-          # never ship a partially compiled package
           remaining=$(find "$STAGING/knowco2" -name "*.py" ! -name "version.py" | wc -l)
           if [ "$remaining" -ne 0 ]; then
-            echo "::error::${remaining} knowco2/*.py file(s) failed to compile to .mpy"
-            find "$STAGING/knowco2" -name "*.py" ! -name "version.py"
+            echo "::error::${remaining} KnowCO2 module(s) were not compiled"
             exit 1
           fi
-
-          # Sanity check: version.py must still be present and readable
           if [ ! -f "$STAGING/knowco2/version.py" ] || ! grep -q "FIRMWARE_VERSION" "$STAGING/knowco2/version.py"; then
             echo "::error::knowco2/version.py missing or unreadable in Full ZIP staging"
             exit 1
           fi
 
-          # Use the same lib snapshot as the Dev ZIP
-          LIB_DIR=$(ls -d lib-*-release 2>/dev/null | sort -r | head -1)
-          if [ -z "$LIB_DIR" ]; then
-            LIB_DIR="lib"
-          fi
-          echo "Using lib directory: $LIB_DIR"
-          cp -r "$LIB_DIR/." "$STAGING/lib/"
+          python3 - "$STAGING/knowco2" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          lock = json.load(open("dependencies/firmware-build-lock.json", encoding="utf-8"))
+          expected = bytes(lock["mpy_cross"]["expected_mpy_header"])
+          paths = sorted(pathlib.Path(sys.argv[1]).rglob("*.mpy"))
+          if not paths:
+              raise SystemExit("No compiled KnowCO2 modules were produced")
+          bad = [str(path) for path in paths if path.read_bytes()[:4] != expected]
+          if bad:
+              raise SystemExit("Wrong CircuitPython MPY header: " + ", ".join(bad))
+          print(f"Verified {len(paths)} compiled KnowCO2 modules")
+          PY
+
+          echo "Using locked lib directory: $KNOWCO2_LIB_DIR"
+          cp -r "$KNOWCO2_LIB_DIR/." "$STAGING/lib/"
 
           cd "$STAGING"
           zip -r "../knowco2-full-${VERSION}.zip" .
           cd ..
-
-          echo "Full ZIP contents:"
           unzip -l "knowco2-full-${VERSION}.zip"
 
       # ------------------------------------------------------------------ #
       # Package 3 — Source ZIP
-      # Clean source tree without git internals, build artifacts, or
-      # macOS junk — useful for developers who want to read / modify code.
+      # Clean source tree without git internals, workflows, build artifacts,
+      # or generated compiler binaries.
       # ------------------------------------------------------------------ #
       - name: Build Source ZIP
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           STAGING="staging-src"
+          rm -rf "$STAGING"
           mkdir -p "$STAGING"
 
           rsync -a \
@@ -258,33 +296,43 @@ jobs:
             --exclude=".DS_Store" \
             --exclude="staging-*" \
             --exclude="*.zip" \
+            --exclude="knowco2-build-v*.json" \
+            --exclude="knowco2-compatibility-v*.json" \
             . "$STAGING/"
 
           cd "$STAGING"
           zip -r "../knowco2-source-${VERSION}.zip" .
           cd ..
-
-          echo "Source ZIP contents:"
           unzip -l "knowco2-source-${VERSION}.zip"
 
       # ------------------------------------------------------------------ #
-      # Gate: every distributed archive must carry the applicable KnowCO2
-      # and third-party license notices. Device-install archives place them
-      # under assets/legal so both USB and OTA installs retain the notices.
+      # Gate: distributed packages carry licenses and the exact dependency
+      # identity that produced them.
       # ------------------------------------------------------------------ #
-      - name: Verify license notices in release ZIPs
+      - name: Verify release package metadata
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           for package in ota dev full; do
             archive="knowco2-${package}-${VERSION}.zip"
             unzip -Z1 "$archive" | grep -Fxq "assets/legal/LICENSE.txt"
             unzip -Z1 "$archive" | grep -Fxq "assets/legal/THIRD_PARTY_NOTICES.md"
+            unzip -Z1 "$archive" | grep -Fxq "assets/legal/FIRMWARE_BUILD_LOCK.json"
+            unzip -Z1 "$archive" | grep -Fxq "assets/legal/FIRMWARE_BUILD_MANIFEST.json"
+            unzip -Z1 "$archive" | grep -Fxq "assets/legal/FIRMWARE_COMPATIBILITY.json"
           done
           unzip -Z1 "knowco2-source-${VERSION}.zip" | grep -Fxq "LICENSE"
           unzip -Z1 "knowco2-source-${VERSION}.zip" | grep -Fxq "THIRD_PARTY_NOTICES.md"
+          unzip -Z1 "knowco2-source-${VERSION}.zip" | grep -Fxq "dependencies/firmware-build-lock.json"
+
+          if unzip -Z1 "knowco2-ota-${VERSION}.zip" | grep -Eq '^lib/'; then
+            echo "::error::OTA package unexpectedly contains lib/"
+            exit 1
+          fi
+          unzip -Z1 "knowco2-dev-${VERSION}.zip" | grep -Eq '^lib/'
+          unzip -Z1 "knowco2-full-${VERSION}.zip" | grep -Eq '^lib/'
 
       # ------------------------------------------------------------------ #
-      # Generate SHA-256 checksums for all artifacts
+      # Generate SHA-256 checksums for every published artifact.
       # ------------------------------------------------------------------ #
       - name: Generate checksums
         run: |
@@ -294,23 +342,10 @@ jobs:
             "knowco2-full-${VERSION}.zip" \
             "knowco2-dev-${VERSION}.zip" \
             "knowco2-source-${VERSION}.zip" \
+            "knowco2-compatibility-${VERSION}.json" \
+            "knowco2-build-${VERSION}.json" \
             > "knowco2-${VERSION}-checksums.txt"
           cat "knowco2-${VERSION}-checksums.txt"
-
-      # ------------------------------------------------------------------ #
-      # Extract firmware version string for the release notes
-      # ------------------------------------------------------------------ #
-      - name: Get firmware version string
-        id: fw_version
-        run: |
-          FW_VER=$(python3 -c "
-          import re, sys
-          content = open('knowco2/version.py').read()
-          m = re.search(r'FIRMWARE_VERSION\s*=\s*[\"\'](.*?)[\"\']', content)
-          print(m.group(1) if m else 'unknown')
-          ")
-          echo "FW_VER=$FW_VER" >> $GITHUB_OUTPUT
-          echo "Firmware version string: $FW_VER"
 
       # ------------------------------------------------------------------ #
       # Create GitHub Release
@@ -322,48 +357,56 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           FW_VER="${{ steps.fw_version.outputs.FW_VER }}"
 
-          gh release create "$VERSION" \
-            --title "KnowCO2 Firmware $VERSION ($FW_VER)" \
-            --notes "$(cat <<'NOTES'
+          cat > release-notes.md <<NOTES
           ## Installation options
 
           | File | Use when |
           |---|---|
-          | `knowco2-full-*.zip` | Fresh install on a factory/blank device — unzip onto your `CIRCUITPY` drive. Space-optimized (knowco2/ compiled to .mpy) to fit the 960 KB CIRCUITPY budget. **This is what the KnowCO2 Flasher fetches automatically.** |
-          | `knowco2-dev-*.zip` | Fresh install or upgrade for developers who want to edit `knowco2/*.py` live on the device — plain, editable source instead of compiled bytecode. Larger; may not fit factory-blank boards. |
-          | `knowco2-ota-*.zip` | OTA upgrade — upload at `http://knowco2-XXXX.local/update` |
-          | `knowco2-source-*.zip` | Source code — for developers who want to read or modify the firmware |
+          | \`knowco2-full-*.zip\` | Space-optimized fresh/factory install. KnowCO2 modules are compiled with the locked CircuitPython compiler. |
+          | \`knowco2-dev-*.zip\` | Editable application source plus the exact locked library snapshot; suitable for development and source-first flasher profiles. |
+          | \`knowco2-ota-*.zip\` | Application OTA update. It leaves \`lib/\` unchanged and declares its required \`library_set_id\` in the embedded build manifest. |
+          | \`knowco2-source-*.zip\` | Clean source tree for review and modification. |
+          | \`knowco2-compatibility-*.json\` | Machine-readable CircuitPython compatibility contract for the KnowCO2 Flasher. |
+          | \`knowco2-build-*.json\` | Exact board, runtime, bundle, vendored-tree, and compiler provenance. |
 
-          ## Installing CircuitPython (first time only)
-          The device needs CircuitPython **10.x** before this firmware will run.
-          Download the `.uf2` for the [Adafruit Feather ESP32-S3 Reverse TFT](https://circuitpython.org/board/adafruit_feather_esp32s3_reverse_tft/), double-tap reset to enter the bootloader, drag the `.uf2` onto the `FTHRS3BOOT` drive, then install this firmware using the full ZIP above.
+          ## Locked runtime
 
-          ## Checksums
-          See `*-checksums.txt` attached below to verify your download.
+          - CircuitPython: \`${KNOWCO2_CP_VERSION}\`
+          - Adafruit bundle: \`${KNOWCO2_BUNDLE_TAG}\`
+          - Library set: \`${KNOWCO2_LIBRARY_SET_ID}\`
+          - Firmware version string: \`${FW_VER}\`
 
-          ## Licensing
-          Every archive includes the KnowCO2 MIT license and notices for bundled
-          third-party libraries.
+          Install the matching CircuitPython UF2 for the Adafruit Feather ESP32-S3 Reverse TFT before copying a fresh-install package. Manufacturing software should verify the compatibility and build manifests rather than selecting an unqualified "latest" dependency.
+
+          ## Checksums and licensing
+
+          Verify downloads with \`knowco2-${VERSION}-checksums.txt\`. Device-install archives include the KnowCO2 license, third-party notices, dependency lock, compatibility contract, and build manifest under \`assets/legal/\`.
           NOTES
-          )" \
+
+          gh release create "$VERSION" \
+            --title "KnowCO2 Firmware $VERSION ($FW_VER)" \
+            --notes-file release-notes.md \
             "knowco2-full-${VERSION}.zip" \
             "knowco2-dev-${VERSION}.zip" \
             "knowco2-ota-${VERSION}.zip" \
             "knowco2-source-${VERSION}.zip" \
+            "knowco2-compatibility-${VERSION}.json" \
+            "knowco2-build-${VERSION}.json" \
             "knowco2-${VERSION}-checksums.txt"
 
-      # ------------------------------------------------------------------ #
-      # Summary
-      # ------------------------------------------------------------------ #
       - name: Release summary
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           echo "=========================================="
           echo "  Release $VERSION published successfully"
           echo "=========================================="
-          echo "  Full ZIP (factory/Flasher): knowco2-full-${VERSION}.zip"
-          echo "  Dev ZIP (editable source):  knowco2-dev-${VERSION}.zip"
-          echo "  OTA ZIP:    knowco2-ota-${VERSION}.zip"
-          echo "  Source ZIP: knowco2-source-${VERSION}.zip"
-          echo "  Checksums:  knowco2-${VERSION}-checksums.txt"
+          echo "  Full ZIP:      knowco2-full-${VERSION}.zip"
+          echo "  Dev ZIP:       knowco2-dev-${VERSION}.zip"
+          echo "  OTA ZIP:       knowco2-ota-${VERSION}.zip"
+          echo "  Source ZIP:    knowco2-source-${VERSION}.zip"
+          echo "  Compatibility: knowco2-compatibility-${VERSION}.json"
+          echo "  Build manifest: knowco2-build-${VERSION}.json"
+          echo "  CircuitPython: $KNOWCO2_CP_VERSION"
+          echo "  Bundle:        $KNOWCO2_BUNDLE_TAG"
+          echo "  Library set:   $KNOWCO2_LIBRARY_SET_ID"
           echo "=========================================="
