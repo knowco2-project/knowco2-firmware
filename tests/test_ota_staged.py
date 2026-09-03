@@ -2,9 +2,10 @@
 """OTA transactional-install test: runs the REAL _process_zip_update from
 RC-48v2 routes.py against the real OTA zip inside this sandbox's root fs.
 Scenarios: happy path, corrupted entry, truncated zip, staging cleanup."""
-import sys, types, os, shutil, zlib, time as _t
+import sys, types, os, shutil, zlib, time as _t, zipfile
 
-sys.path.insert(0, "..")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, REPO_ROOT)
 
 # ---- mocks (CP-only modules) -----------------------------------------
 for name in ("wifi", "socketpool", "ssl", "adafruit_requests",
@@ -38,14 +39,54 @@ def fake_send_ota_result(conn, success, message):
     results.append((success, message))
 routes._send_ota_result = fake_send_ota_result
 
-ZIP = "BUILD_ZIP_PATH"
+ZIP = os.environ.get("KNOWCO2_OTA_TEST_ZIP", "")
+_created_fixture = False
+if not ZIP:
+    ZIP = "/tmp/knowco2-ota-ci.zip"
+    _created_fixture = True
+    try:
+        os.remove(ZIP)
+    except OSError:
+        pass
+    with zipfile.ZipFile(ZIP, "w", zipfile.ZIP_DEFLATED) as fixture:
+        for filename in ("code.py", "boot.py"):
+            fixture.write(os.path.join(REPO_ROOT, filename), filename)
+        for dirname in ("knowco2", "assets"):
+            source_root = os.path.join(REPO_ROOT, dirname)
+            for dirpath, _, filenames in os.walk(source_root):
+                for filename in filenames:
+                    source = os.path.join(dirpath, filename)
+                    fixture.write(source, os.path.relpath(source, REPO_ROOT))
+        fixture.write(
+            os.path.join(REPO_ROOT, "LICENSE"),
+            "assets/legal/LICENSE.txt",
+        )
+        fixture.write(
+            os.path.join(REPO_ROOT, "THIRD_PARTY_NOTICES.md"),
+            "assets/legal/THIRD_PARTY_NOTICES.md",
+        )
+
+with zipfile.ZipFile(ZIP) as fixture:
+    installable = [
+        info
+        for info in fixture.infolist()
+        if not info.is_dir() and routes._zip_safe_path(info.filename)
+    ]
+    expected_file_count = len(installable)
+    largest_installable = max(info.file_size for info in installable)
+    low_space_free = largest_installable + 32768
+expected_version = open(
+    os.path.join(REPO_ROOT, "knowco2", "version.py"), "rb"
+).read()
+
 fails = []
 def check(name, cond, extra=""):
     print(("PASS" if cond else "FAIL"), "-", name, extra)
     if not cond: fails.append(name)
 
 def clean_root():
-    for p in ("/code.py", "/code.py.bak", "/boot.py", "/knowco2", "/ota_staged", "/tmp_ota.zip"):
+    for p in ("/code.py", "/code.py.bak", "/boot.py", "/knowco2", "/assets",
+              "/ota_staged", "/tmp_ota.zip"):
         if os.path.isdir(p): shutil.rmtree(p, ignore_errors=True)
         elif os.path.exists(p): os.remove(p)
 
@@ -65,11 +106,14 @@ results.clear()
 routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
 ok, msg = results[-1]
 check("T1 install succeeded", ok, "| " + msg[:90])
-check("T1 55 files CRC-verified", "55 files" in msg)
+check("T1 all files CRC-verified", "%d files" % expected_file_count in msg)
 check("T1 helpers.py intact with log()", os.path.exists("/knowco2/helpers.py")
       and b"def log(" in open("/knowco2/helpers.py","rb").read())
-check("T1 code.py installed + version v4",
-      b"RC-51-Perf-v1" in open("/knowco2/version.py","rb").read())
+check("T1 version.py matches source",
+      expected_version == open("/knowco2/version.py", "rb").read())
+check("T1 license notice installed",
+      os.path.exists("/assets/legal/LICENSE.txt")
+      and os.path.exists("/assets/legal/THIRD_PARTY_NOTICES.md"))
 check("T1 staging removed", not os.path.exists("/ota_staged"))
 check("T1 zip removed", not os.path.exists("/tmp_ota.zip"))
 check("T1 reboot attempted", resets["n"] == 1)
@@ -112,7 +156,6 @@ check("T4 stale staging cleared", not os.path.exists("/ota_staged"))
 
 # ---- T5: single-byte flip inside ONE file is caught by CRC ------------
 # Rebuild a zip where knowco2/helpers.py content is corrupted but sizes kept
-import zipfile
 src = zipfile.ZipFile(ZIP)
 with zipfile.ZipFile("/tmp_ota.zip", "w") as dst:
     for info in src.infolist():
@@ -138,7 +181,7 @@ clean_root()
 shutil.copy(ZIP, "/tmp_ota.zip")
 results.clear(); resets["n"] = 0
 orig_free = routes._fs_free_bytes
-routes._fs_free_bytes = lambda: 120_000   # < 423KB tree, > largest file
+routes._fs_free_bytes = lambda: low_space_free  # staging is tight; one file still fits
 routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
 routes._fs_free_bytes = orig_free
 ok, msg = results[-1]
@@ -165,7 +208,7 @@ pos = int(len(data2) * 0.5)
 bad2 = data2[:pos] + bytes(b ^ 0xFF for b in data2[pos:pos+8]) + data2[pos+8:]
 open("/tmp_ota.zip","wb").write(bad2)
 results.clear(); resets["n"] = 0
-routes._fs_free_bytes = lambda: 120_000
+routes._fs_free_bytes = lambda: low_space_free
 routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
 routes._fs_free_bytes = orig_free
 ok, msg = results[-1]
@@ -192,6 +235,11 @@ check("T9 metadata gone", not os.path.exists("/knowco2/.DS_Store")
 check("T9 real files untouched", snapshot() == good_tree)
 
 clean_root()
+if _created_fixture:
+    try:
+        os.remove(ZIP)
+    except OSError:
+        pass
 time.sleep = _orig_sleep
 print()
 if fails:

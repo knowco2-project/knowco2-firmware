@@ -1,0 +1,56 @@
+name: Firmware CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  behavioral-tests:
+    name: Behavioral tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile all firmware modules
+        run: python3 -m py_compile $(find . -name "*.py" -not -path "./tests/*" -not -path "./.git/*")
+
+      - name: Remove compile artifacts
+        run: find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+
+      - name: Run hardware-free behavioral suites
+        working-directory: tests
+        run: |
+          python3 test_cloud_heal.py
+          python3 test_snappy_ui.py
+          python3 test_graph_perf.py
+          python3 test_buttons.py
+
+  ota-staged-install:
+    name: OTA staged install
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.12-slim-bookworm
+      options: --user 0
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run transactional OTA suite in disposable root filesystem
+        working-directory: tests
+        run: python3 test_ota_staged.py
