@@ -17,6 +17,7 @@ import storage
 
 from . import state, config, runtime
 from .helpers import log, as_int, clamp_int, rand_token, rand_safe32
+from .languages import SUPPORTED_LANGUAGE_CODES
 
 SETTINGS_FILE = config.SETTINGS_FILE
 
@@ -79,9 +80,8 @@ DEFAULT_SETTINGS = {
     # parameter.  Use the web UI below to set or clear this password.
     "admin_password": "",
 
-    # UI language for the web settings page.  Applied client-side via JavaScript.
-    # Options: en, es, fr, de, pt, it, ja, zh
-    # Device display is always English (font supports ASCII only).
+    # UI language for the web settings page. Applied client-side in a browser.
+    # The catalog lives in languages.py; the device display remains English.
     "lang": "en",
     "energy_mode": False,
     "colorblind_mode": False,  # use Wong colorblind-safe palette (blue/amber/vermillion)
@@ -307,10 +307,7 @@ def update_settings_from_params(params):
     if "admin_pw" in params:
         s["admin_password"] = params["admin_pw"] or ""
 
-    if "lang" in params and params["lang"] in (
-        "en", "es", "fr", "de", "pt", "it", "nl", "sv", "pl", "cs",
-        "ru", "uk", "tr", "vi", "id", "hi", "bn", "ta", "th", "ja", "zh", "ko",
-    ):
+    if "lang" in params and params["lang"] in SUPPORTED_LANGUAGE_CODES:
         s["lang"] = params["lang"]
 
     if "ap_ssid" in params and params["ap_ssid"]:
