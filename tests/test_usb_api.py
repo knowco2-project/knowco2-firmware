@@ -3,9 +3,17 @@
 
 import importlib
 import json
+import os
 import sys
 import types
 import unittest
+
+# CI runs this file with tests/ as the working directory. Add the repository
+# root explicitly so the in-tree knowco2 package is importable in the same way
+# as the older standalone firmware tests.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 
 class FakePort:
