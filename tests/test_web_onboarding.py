@@ -140,6 +140,36 @@ class _PartialSendConn:
 
 
 class WebOnboardingRegressionTests(unittest.TestCase):
+    def test_local_write_source_accepts_device_hosts(self):
+        http, _, _ = _load_http_util()
+        allowed = ("192.168.4.1", "192.168.1.42", "knowco2-abcd.local")
+        for request in (
+            b"POST / HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n",
+            b"PATCH /api/v1/settings HTTP/1.1\r\nHost: 192.168.1.42:80\r\n\r\n",
+            b"POST / HTTP/1.1\r\nHost: knowco2-abcd.local\r\nOrigin: http://knowco2-abcd.local\r\nSec-Fetch-Site: same-origin\r\n\r\n",
+        ):
+            self.assertTrue(http.request_source_allowed(request, allowed))
+
+    def test_local_write_source_rejects_rebinding_and_cross_site(self):
+        http, _, _ = _load_http_util()
+        allowed = ("192.168.4.1", "knowco2-abcd.local")
+        rejected = (
+            b"POST / HTTP/1.1\r\n\r\n",
+            b"POST / HTTP/1.1\r\nHost: attacker.example\r\n\r\n",
+            b"POST / HTTP/1.1\r\nHost: 192.168.4.1\r\nOrigin: https://attacker.example\r\n\r\n",
+            b"POST / HTTP/1.1\r\nHost: 192.168.4.1\r\nSec-Fetch-Site: cross-site\r\n\r\n",
+        )
+        for request in rejected:
+            self.assertFalse(http.request_source_allowed(request, allowed))
+
+    def test_local_route_security_regressions_are_closed(self):
+        routes = (WEB_DIR / "routes.py").read_text(encoding="utf-8")
+        settings = (REPO_ROOT / "knowco2" / "settings.py").read_text(encoding="utf-8")
+        self.assertIn('elif route == "/":', routes)
+        self.assertIn('Unknown local route', routes)
+        self.assertIn('make_json_response(payload, cors=False)', routes)
+        self.assertIn('if "admin_pw" in params and params["admin_pw"]:', settings)
+
     def test_i18n_is_a_real_package_initializer(self):
         self.assertTrue((I18N_DIR / "__init__.py").is_file())
         self.assertFalse(

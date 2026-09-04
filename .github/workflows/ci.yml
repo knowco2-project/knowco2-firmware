@@ -21,11 +21,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Verify locked CircuitPython dependencies
+        run: python3 tools/firmware_dependencies.py verify
 
       - name: Compile all firmware modules
         run: python3 -m py_compile $(find . -name "*.py" -not -path "./tests/*" -not -path "./.git/*")
@@ -36,6 +41,7 @@ jobs:
       - name: Run hardware-free behavioral suites
         working-directory: tests
         run: |
+          python3 test_firmware_dependencies.py
           python3 test_cloud_heal.py
           python3 test_snappy_ui.py
           python3 test_graph_perf.py
@@ -43,6 +49,11 @@ jobs:
           python3 test_web_onboarding.py
           python3 -m unittest test_api_v1_contract.py
           python3 test_provisioning.py
+          python3 test_product_naming.py
+          python3 test_i18n.py
+          python3 test_mqtt_tls.py
+          python3 test_boot_security.py
+          python3 test_usb_api.py
 
   ota-staged-install:
     name: OTA staged install
@@ -56,4 +67,6 @@ jobs:
 
       - name: Run transactional OTA suite in disposable root filesystem
         working-directory: tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
         run: python3 test_ota_staged.py

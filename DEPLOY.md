@@ -1,4 +1,4 @@
-# Deploying KnowCO2 on the device (CIRCUITPY layout)
+# Deploying KnowCO2 on the device filesystem
 
 This explains exactly what lives where on the board so the modular firmware
 runs correctly and stays stable.
@@ -6,7 +6,7 @@ runs correctly and stays stable.
 ## What the board's filesystem should look like
 
 ```
-CIRCUITPY/                 (the board's flash drive)
+KNOWCO2/                   (visible service volume; hidden during normal operation)
 ├── boot.py                # runs once at power-up (USB-drive + display setup)
 ├── code.py                # entry point (boot sequence + main loop)   ← final step
 ├── settings.json          # persisted settings (created automatically)
@@ -74,12 +74,13 @@ Settings are backed up before any write and restored on next boot if needed.
 The provided `boot.py` runs before `code.py` and:
 - sets the display rotation to 180 and clears the REPL terminal so nothing
   upside-down flashes at boot;
-- hides the USB CIRCUITPY drive by default (so end users don't see it) while
-  keeping the filesystem writable for settings;
-- **hold button D1 at power-up** to keep the USB drive visible (for development
-  / editing files from your computer).
+- labels the service volume `KNOWCO2` and hides it during normal customer
+  operation while keeping the filesystem writable for settings;
+- **hold physical button B at power-up/reset** to show the `KNOWCO2` service
+  volume for development or maintenance.
 
-This is unchanged from your working build and is compatible with the package.
+The maintenance behavior is covered by the hardware-free production-naming
+tests and must also be verified on the target board before release.
 
 ## Stability notes
 

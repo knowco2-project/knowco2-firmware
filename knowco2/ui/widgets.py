@@ -404,7 +404,7 @@ reg_rohs_label.anchored_position = (6, 64)
 reg_rohs_label.hidden = True
 main_group.append(reg_rohs_label)
 
-reg_company_label = label.Label(terminalio.FONT, text="KNOWCO2 LLC",
+reg_company_label = label.Label(terminalio.FONT, text="KnowCO2 LLC",
                                  color=0xFFFFFF, scale=1)
 reg_company_label.anchor_point = (0.0, 0.0)
 reg_company_label.anchored_position = (6, 78)
