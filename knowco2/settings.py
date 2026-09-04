@@ -271,6 +271,20 @@ def update_settings_from_params(params):
     re-apply. Returns True if the AP SSID/password changed (caller restarts AP).
     Colour scheme is re-applied through the UI hook."""
     s = state.settings
+
+    # Extra portal languages are loaded on demand. Their selector submits a
+    # deliberately minimal form so the translated page can be re-rendered.
+    # Keep this as an early, allow-listed path: the normal settings handler
+    # interprets an absent checkbox as "off", so letting a locale-only request
+    # fall through would disable unrelated features. Ignore every other field
+    # even if a malformed client includes one.
+    if params.get("lang_only") == "1":
+        lang = params.get("lang")
+        if lang in SUPPORTED_LANGUAGE_CODES:
+            s["lang"] = lang
+            save_settings()
+        return False
+
     ap_changed = False
 
     old_ap_ssid = s.get("ap_ssid", "")

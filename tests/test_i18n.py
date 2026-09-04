@@ -118,11 +118,53 @@ assert set(packed(i18n.build_translations_js("en"))) == base
 persian = i18n.build_translations_js("fa")
 assert set(packed(persian)) == base | {"fa"}
 assert '"ur":' not in re.search(r"var _V=.*?;\(function", persian).group(0)
-assert "this.form.submit()" in persian and "var _RTL=" in persian
+assert "this.form.submit()" not in persian
+assert "var _RTL=" in persian and "var _KCO2_CURRENT_LANG=" in persian
 options = i18n.build_lang_options("fa")
 assert "value='fa' dir='rtl' selected" in options
 for code in languages.RTL_LANGUAGE_CODES:
     assert re.search(r"value='%s' dir='rtl'" % code, options)
+
+# Extra-language reloads must use a separate allow-listed form, and stale
+# browser-local locales must fall back to a locale actually present in T.
+assert "function submitLanguageOnly(lang, sourceForm)" in portal
+assert "addField('lang_only', '1')" in portal
+assert "addField('lang', lang)" in portal
+assert "input[name=pw]" in portal
+assert "if (!T[saved])" in portal
+assert "if (!T[lang])" in portal
+assert "localStorage.getItem('kco2_lang') || _KCO2_CURRENT_LANG" in portal
+assert "submitLanguageOnly(requested, this.form)" in portal
+assert "this.form.submit()" not in portal
+
+# The server-side marker is an allow-listed fast path. Even a malformed locale
+# request carrying unrelated fields must change only the language.
+storage = types.ModuleType("storage")
+storage.remount = lambda *args, **kwargs: None
+storage.getmount = lambda *args, **kwargs: types.SimpleNamespace(readonly=False)
+sys.modules["storage"] = storage
+settings = load("knowco2.settings", KC2 / "settings.py")
+settings.save_settings = lambda: True
+settings.state.settings.clear()
+settings.state.settings.update({
+    "lang": "en",
+    "ap_ssid": "knowco2-safe",
+    "cloud_enabled": True,
+    "mqtt_enabled": True,
+    "display_flip": True,
+})
+before = dict(settings.state.settings)
+changed_ap = settings.update_settings_from_params({
+    "lang_only": "1",
+    "lang": "fa",
+    "ap_ssid": "should-not-apply",
+    "cloud_enabled": "",
+})
+assert changed_ap is False
+assert settings.state.settings == dict(before, lang="fa")
+
+settings.update_settings_from_params({"lang_only": "1", "lang": "invalid"})
+assert settings.state.settings == dict(before, lang="fa")
 
 legacy = "var T=" + json.dumps(
     {code: translations.TRANSLATIONS[code] for code in languages.BASE_LANGUAGE_CODES},

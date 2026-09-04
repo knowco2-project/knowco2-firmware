@@ -299,8 +299,8 @@ def build_translations_js(current_lang=None):
 
     All original/base languages are included so their selector changes remain
     instant. At most one extra language (the current saved language) is added.
-    Selecting a different extra language submits the existing settings form
-    once, then the reloaded page contains that language.
+    The portal page performs a language-only reload when another extra language
+    is selected.
     """
     if current_lang is None:
         current_lang = _current_language()
@@ -343,14 +343,7 @@ def build_translations_js(current_lang=None):
         "o[_K[i]]=a[i]===null?e[i]:a[i];}T[c]=o;}})();"
         "var _RTL=" + _compact_json(rtl) + ";"
         "var _EXTRA=" + _compact_json(extra_codes) + ";"
+        "var _KCO2_CURRENT_LANG=" + _compact_json(current_lang) + ";"
         "function _kco2Dir(c){document.documentElement.dir="
         "_RTL[c]?'rtl':'ltr';}"
-        "(function(){var c=localStorage.getItem('kco2_lang')||" +
-        _compact_json(current_lang) + ";_kco2Dir(c);"
-        "document.addEventListener('DOMContentLoaded',function(){"
-        "var s=document.querySelector('select[name=lang]');if(!s)return;"
-        "s.addEventListener('change',function(){_kco2Dir(this.value);"
-        "if(_EXTRA[this.value]&&!T[this.value]&&this.form){"
-        "var p=this.form.querySelector('[name=admin_pw]');"
-        "if(p&&!p.value)p.disabled=true;this.form.submit();}});});})();"
     )
