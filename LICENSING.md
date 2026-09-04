@@ -17,3 +17,11 @@ The complete distribution notice accompanying the checked-in CircuitPython
 [`LICENSES/CIRCUITPYTHON-10.2.1.txt`](LICENSES/CIRCUITPYTHON-10.2.1.txt).
 
 Release archives place legal material under `assets/legal/` so it remains present on installed devices. Source archives retain the same material at the repository root.
+
+## Legacy releases
+
+`v0.0.9` is the first KnowCO2 firmware release whose OTA, development, full,
+and source archives all carry the applicable license and third-party notices.
+The earlier `v0.1.0` and `v0.0.2` through `v0.0.8` archives predate that
+packaging safeguard. Use `v0.0.9` or later when a self-contained licensed
+distribution is required.
