@@ -13,12 +13,13 @@ espidf, microcontroller). No hardware needed; CI runs them on every PR.
 | `test_buttons.py` | Button taps, holds, combinations, busy-state polling, and wrap-safe timing |
 | `test_api_v1_contract.py` | Platform-neutral Local API v1 validation, strict booleans, claim normalization, and secret-free payloads |
 | `test_provisioning.py` | Write-only browser/app onboarding, AP/physical-write boundary, deferred STA handoff, fixed-origin activation, idempotent retries, and manufacturing/cloud identity separation |
+| `test_product_naming.py` | Production brand/model names, physical A/B/C terminology, and the hidden/maintenance `KNOWCO2` service-volume contract |
 
 Run locally from `tests/`:
 
 ```sh
 docker run --rm -v "$PWD/..:/fw:ro" -w /fw/tests python:3.12-slim-bookworm \
-  sh -c "python test_cloud_heal.py && python test_snappy_ui.py && python test_graph_perf.py && python test_buttons.py && python test_web_onboarding.py && python -m unittest test_api_v1_contract.py && python test_provisioning.py && python test_ota_staged.py"
+  sh -c "python test_cloud_heal.py && python test_snappy_ui.py && python test_graph_perf.py && python test_buttons.py && python test_web_onboarding.py && python -m unittest test_api_v1_contract.py && python test_provisioning.py && python test_product_naming.py && python test_ota_staged.py"
 ```
 
 Philosophy: every bug that reached hardware becomes a permanent test.

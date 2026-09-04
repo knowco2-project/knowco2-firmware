@@ -8,12 +8,12 @@ finish the migration without ever breaking the working firmware.
 ## What's in this build
 
 ```
-knowco2_modular/
+knowco2-firmware/
 ├── code.py                     # full firmware entry point (boot + loop)  [final step]
 ├── boot.py                     # ✅ runs at power-up (USB drive + display)
 ├── sensor_smoketest.py         # ✅ runnable on-hardware test of the sensor layer
 ├── ARCHITECTURE.md             # this file
-├── DEPLOY.md                   # ✅ on-device CIRCUITPY layout + libraries + OTA
+├── DEPLOY.md                   # ✅ on-device filesystem layout + libraries + OTA
 ├── ADDING_A_SENSOR.md          # contributor guide
 ├── test_sensors.py             # ✅ desktop tests for the sensor layer (mock sensors)
 └── knowco2/

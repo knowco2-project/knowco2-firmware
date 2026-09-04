@@ -133,7 +133,7 @@ def render_settings_page():
 <html lang=\"""" + current_lang + """\" translate="yes">
 <head>
   <meta charset="utf-8">
-  <title>Know CO2 Settings</title>
+  <title>KnowCO2 Settings</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     *,*::before,*::after{box-sizing:border-box}
@@ -194,7 +194,7 @@ def render_settings_page():
 <body>
   <a href="#main-content" class="skip-link" data-i18n="skip_nav">Skip to main content</a>
   <div class="wrap" id="main-content" role="main">
-    <h1>Know CO2 <span class="version-badge">""" + FIRMWARE_VERSION + """</span></h1>
+    <h1>KnowCO2 <span class="version-badge">""" + FIRMWARE_VERSION + """</span></h1>
     <div class="muted" style="font-size:12px;margin-bottom:10px;">
       Open <span class="code">http://""" + ip_for_hint + """/</span>.""" + mdns_hint + """
       <br><small class="muted">If your phone says "No Internet", that’s expected during AP setup.</small>
@@ -240,7 +240,7 @@ def render_settings_page():
           <button id="onboarding-submit" type="submit" class="btn btn-primary btn-block">Connect device</button>
           <p id="onboarding-result" class="help-text" role="status" aria-live="polite"></p>
         </form>
-        <noscript><p class="warn-text">JavaScript is unavailable. Save Wi-Fi in Advanced settings below, then hold D2 to connect.</p></noscript>
+        <noscript><p class="warn-text">JavaScript is unavailable. Save Wi-Fi in Advanced settings below, then hold physical button C to connect.</p></noscript>
       </fieldset>
     </section>
 
@@ -364,7 +364,7 @@ def render_settings_page():
             Regenerate AP credentials
           </button>
           <div class="muted" style="margin-top:6px;">
-            <small>This restarts AP. View the new password on the device (press D2).</small>
+            <small>This restarts AP. View the new password on the device (press button C).</small>
           </div>
         </div>
       </fieldset>
@@ -414,7 +414,7 @@ def render_settings_page():
           </label>
         </details>
         <small class="muted">
-          Tip: after saving STA credentials, <b>hold D2 for ~2 seconds</b> to switch into STA mode.
+          Tip: after saving Wi-Fi credentials, <b>hold button C for about 2 seconds</b> to connect.
         </small>
       </fieldset>
 
@@ -539,7 +539,7 @@ def render_settings_page():
         </small>
       </div>
       <div class="row muted">
-        <small>Settings are saved to <code>settings.json</code>. If you see "USB mode: settings won't save", eject CIRCUITPY from your computer.</small>
+        <small>Settings are saved to <code>settings.json</code>. If you see "USB mode: settings won't save", eject the <code>KNOWCO2</code> service volume from your computer.</small>
       </div>
       <nav class="page-nav" aria-label="Page navigation">
         <a href="/calibration" data-i18n="nav_calib">Calibration</a>
@@ -876,7 +876,12 @@ def render_settings_page():
 <script>
 """ + _i18n.build_translations_js() + """
 function applyLang(lang){
+  // localStorage is shared by captive portals at the same origin. A cached
+  // extra locale may therefore be unavailable in this device's response.
+  // Never label an English fallback as if it were the missing locale.
+  if (!T[lang]) lang = T[_KCO2_CURRENT_LANG] ? _KCO2_CURRENT_LANG : 'en';
   var t = T[lang] || T['en'];
+  _kco2Dir(lang);
   // Update the document language for screen readers
   document.documentElement.lang = lang;
   // Update the page <title>
@@ -911,10 +916,42 @@ function applyLang(lang){
   if (sel) sel.value = lang;
   localStorage.setItem('kco2_lang', lang);
 }
+function submitLanguageOnly(lang, sourceForm){
+  // Build a separate allow-listed form. Submitting sourceForm would persist
+  // every partially edited setting and bypass browser constraint validation.
+  var f = document.createElement('form');
+  f.method = 'POST';
+  f.action = '/';
+  function addField(name, value){
+    var input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    f.appendChild(input);
+  }
+  addField('lang_only', '1');
+  addField('lang', lang);
+  // Preserve authorization when the settings page is password-protected.
+  if (sourceForm) {
+    var pw = sourceForm.querySelector('input[name=pw]');
+    if (pw) addField('pw', pw.value);
+  }
+  localStorage.setItem('kco2_lang', lang);
+  document.body.appendChild(f);
+  f.submit();
+}
 (function(){
-  var saved = localStorage.getItem('kco2_lang') || '""" + current_lang + """';
+  var saved = localStorage.getItem('kco2_lang') || _KCO2_CURRENT_LANG;
+  if (!T[saved]) saved = T[_KCO2_CURRENT_LANG] ? _KCO2_CURRENT_LANG : 'en';
   var sel = document.querySelector('select[name=lang]');
-  if (sel) sel.addEventListener('change', function(){ applyLang(this.value); });
+  if (sel) sel.addEventListener('change', function(){
+    var requested = this.value;
+    if (_EXTRA[requested] && !T[requested]) {
+      submitLanguageOnly(requested, this.form);
+      return;
+    }
+    applyLang(requested);
+  });
   applyLang(saved);
 })();
 </script>

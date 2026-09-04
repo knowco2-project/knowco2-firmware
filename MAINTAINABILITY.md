@@ -7,8 +7,8 @@ IS the product — the code has to live up to that.
 ## Decisions already made (and why)
 
 **Ship .py, not .mpy.** Precompiling to `.mpy` would roughly halve file
-sizes and speed imports/boot — but a user opening CIRCUITPY and finding
-opaque binaries kills the "edit your own monitor" story that
+sizes and speed imports/boot — but a user opening the `KNOWCO2` service
+volume and finding opaque binaries kills the "edit your own monitor" story that
 differentiates KnowCO2 from every sealed $50 competitor. Performance is
 won in hot paths instead (see below). If flash pressure ever becomes
 critical, offer a second "compact" release artifact built by CI —
