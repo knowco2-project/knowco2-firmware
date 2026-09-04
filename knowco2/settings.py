@@ -101,8 +101,8 @@ DEFAULT_SETTINGS = {
 
 
 def ensure_fs_writable():
-    """Try to make CIRCUITPY writable (works when a USB host has not mounted
-    it as mass storage). Updates state.fs_readonly."""
+    """Try to make the device filesystem writable when a USB host has not
+    mounted the service volume. Updates state.fs_readonly."""
     try:
         storage.remount("/", readonly=False)
     except Exception:

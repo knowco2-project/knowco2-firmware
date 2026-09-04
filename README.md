@@ -16,9 +16,12 @@ Choose one of the options below depending on your situation.
 
 Download `knowco2-full-vX.Y.Z.zip` from the [latest release](../../releases/latest).
 
-1. Connect the Feather via USB — the `CIRCUITPY` drive appears.
-   *(Hold button B at power-up to force the drive visible if it is hidden.)*
-2. Unzip and copy everything inside onto the root of `CIRCUITPY`, replacing existing files.
+1. Hold physical button **B** while powering on or resetting the device. The
+   `KNOWCO2` service volume appears.
+   *(A factory-blank CircuitPython board initially uses `CIRCUITPY`; installing
+   KnowCO2 changes the label to `KNOWCO2`.)*
+2. Unzip and copy everything inside onto the root of the visible service
+   volume, replacing existing files.
 3. Eject safely and reboot — the device boots into KnowCO2.
 
 ### Option 2 — OTA ZIP (upgrade via the web portal)
@@ -34,11 +37,15 @@ The full source is available as `Source code (zip)` on every release, or by clon
 
 ### Installing CircuitPython (first time only)
 
-The device needs CircuitPython **10.x** installed before the firmware can run:
+The device needs the production-qualified CircuitPython runtime installed before
+the firmware can run (currently **10.2.1**):
 
-1. Download the latest **10.x** `.uf2` for the [Adafruit Feather ESP32-S3 Reverse TFT](https://circuitpython.org/board/adafruit_feather_esp32s3_reverse_tft/).
-2. Double-tap the reset button — the `FTHRS3BOOT` drive appears.
-3. Drag the `.uf2` onto the drive — the board reboots and `CIRCUITPY` appears.
+1. Use the board `.uf2` under `circuitpython-release/10.2.1/`, or download that
+   exact version for the [Adafruit Feather ESP32-S3 Reverse TFT](https://circuitpython.org/board/adafruit_feather_esp32s3_reverse_tft/).
+2. Double-tap the reset button — the Feather bootloader volume named
+   `FTHRS3BOOT` appears.
+3. Drag the `.uf2` onto that volume. The board reboots and the factory-default
+   CircuitPython volume named `CIRCUITPY` appears.
 4. Then follow **Option 1** above to install the firmware.
 
 ---
@@ -103,14 +110,22 @@ circup install adafruit_scd4x adafruit_scd30 adafruit_max1704x \
 
 ---
 
-## Buttons
+## Physical buttons
 
-| Button | Pin | Action |
-|---|---|---|
-| A | D0 | Toggle °C / °F |
-| B | D1 | Cycle display mode (Text → Big CO₂ → Graph) |
-| C | D2 | Info screen |
-| Hold B at power-up | D1 | Mount `CIRCUITPY` USB drive for file access |
+All customer instructions and on-device/web interfaces use the enclosure
+labels **A**, **B**, and **C**:
+
+| Physical control | Action |
+|---|---|
+| A | Toggle °C / °F |
+| B | Cycle display mode (Text → Big CO₂ → Graph) |
+| C (short press) | Toggle the measurement and network-information screens |
+| C (hold about 2 seconds) | Switch between setup access-point and Wi-Fi client modes |
+| B held during power-up/reset | Show the `KNOWCO2` service volume for maintenance |
+
+For firmware contributors only, the internal board-pin mapping is A =
+`board.D0`, B = `board.D1`, and C = `board.D2`. Do not expose those pin names
+in customer-facing text.
 
 ---
 
@@ -130,3 +145,5 @@ The previous `code.py` is kept as `/code.py.bak` automatically.
 This firmware is MIT licensed — see [LICENSE](LICENSE).
 
 The `lib/` directory contains pre-compiled Adafruit CircuitPython libraries distributed under their own MIT licenses. See the [Adafruit CircuitPython Bundle](https://github.com/adafruit/Adafruit_CircuitPython_Bundle) for individual library sources and license texts.
+
+Product-facing names are defined in [PRODUCT_NAMING.md](PRODUCT_NAMING.md).

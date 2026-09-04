@@ -1,4 +1,6 @@
-import sys, types
+from pathlib import Path
+import sys
+import types
 
 # ---- Build fake adafruit_scd4x / adafruit_scd30 modules BEFORE import ----
 calls = []
@@ -62,7 +64,7 @@ m30.SCD30 = lambda i2c: FakeSCD30(i2c, present=SCENARIO["scd30_present"])
 sys.modules["adafruit_scd4x"] = m4x
 sys.modules["adafruit_scd30"] = m30
 
-sys.path.insert(0, "/home/claude/knowco2_modular")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 def reload_pkg():
     for k in list(sys.modules):

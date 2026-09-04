@@ -2,7 +2,7 @@
 # ----------------------------------------------------------------------
 # Minimal on-hardware check of the modular sensor layer ONLY.
 #
-# Copy `knowco2/` and this file to CIRCUITPY, then rename this to code.py
+# Copy `knowco2/` and this file to the KNOWCO2 service volume, then rename this to code.py
 # (or run it from the REPL). It exercises detection, identity, reading,
 # and the low-power switch on your real sensor — without any of the
 # display / Wi-Fi / web code, so it can't disturb your working firmware

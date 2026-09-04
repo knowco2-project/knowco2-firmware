@@ -141,7 +141,7 @@ def render_settings_page():
 <html lang=\"""" + current_lang + """\" translate="yes">
 <head>
   <meta charset="utf-8">
-  <title>Know CO2 Settings</title>
+  <title>KnowCO2 Settings</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     *,*::before,*::after{box-sizing:border-box}
@@ -202,7 +202,7 @@ def render_settings_page():
 <body>
   <a href="#main-content" class="skip-link" data-i18n="skip_nav">Skip to main content</a>
   <div class="wrap" id="main-content" role="main">
-    <h1>Know CO2 <span class="version-badge">""" + FIRMWARE_VERSION + """</span></h1>
+    <h1>KnowCO2 <span class="version-badge">""" + FIRMWARE_VERSION + """</span></h1>
     <div class="muted" style="font-size:12px;margin-bottom:10px;">
       Open <span class="code">http://""" + ip_for_hint + """/</span>.""" + mdns_hint + """
       <br><small class="muted">If your phone says "No Internet", that’s expected during AP setup.</small>
@@ -351,7 +351,7 @@ def render_settings_page():
             Regenerate AP credentials
           </button>
           <div class="muted" style="margin-top:6px;">
-            <small>This restarts AP. View the new password on the device (press D2).</small>
+            <small>This restarts AP. View the new password on the device (press button C).</small>
           </div>
         </div>
       </fieldset>
@@ -401,7 +401,7 @@ def render_settings_page():
           </label>
         </details>
         <small class="muted">
-          Tip: after saving STA credentials, <b>hold D2 for ~2 seconds</b> to switch into STA mode.
+          Tip: after saving Wi-Fi credentials, <b>hold button C for about 2 seconds</b> to connect.
         </small>
       </fieldset>
 
@@ -551,7 +551,7 @@ def render_settings_page():
         </small>
       </div>
       <div class="row muted">
-        <small>Settings are saved to <code>settings.json</code>. If you see "USB mode: settings won't save", eject CIRCUITPY from your computer.</small>
+        <small>Settings are saved to <code>settings.json</code>. If you see "USB mode: settings won't save", eject the <code>KNOWCO2</code> service volume from your computer.</small>
       </div>
       <nav class="page-nav" aria-label="Page navigation">
         <a href="/calibration" data-i18n="nav_calib">Calibration</a>

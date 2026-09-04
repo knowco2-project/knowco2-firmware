@@ -661,7 +661,7 @@ while True:
     # Background STA auto-reconnect: if startup STA failed, retry every 90 s so
     # the device connects once the router becomes reachable (e.g. after reboot).
     # Stops after _STA_AUTO_RETRY_MAX attempts to avoid looping forever.
-    # Cleared when the user manually holds D2 to stay in AP mode.
+    # Cleared when the user manually holds physical button C to stay in AP mode.
     if (state.wifi_mode == config.WIFI_MODE_AP and state._sta_fallback
             and state._sta_auto_retry_count < config._STA_AUTO_RETRY_MAX
             and any(

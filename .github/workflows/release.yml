@@ -56,7 +56,7 @@ jobs:
       # (PYTHONDONTWRITEBYTECODE does NOT suppress this — that only
       # affects import-time caching, not py_compile's explicit output).
       # These must not leak into any staged package below: each one adds
-      # bytes and a file-count entry that eats into the CIRCUITPY budget
+      # bytes and a file-count entry that eats into the device-filesystem budget
       # for nothing. Confirmed by hand that py_compile creates these even
       # with the env var set, so clean up explicitly instead.
       - name: Remove __pycache__ created by the compile gate
@@ -69,6 +69,7 @@ jobs:
           python3 test_snappy_ui.py
           python3 test_graph_perf.py
           python3 test_buttons.py
+          python3 test_product_naming.py
 
       # ------------------------------------------------------------------ #
       # Gate: the tag must match the firmware version actually in the tree
@@ -179,7 +180,7 @@ jobs:
       # ------------------------------------------------------------------ #
       # Package 2b — Full ZIP (space-optimized, factory install)
       # knowco2/ is compiled to .mpy bytecode instead of shipped as .py
-      # source, so the whole package fits the approved 960 KB CIRCUITPY
+      # source, so the whole package fits the approved 960 KB device-filesystem
       # budget. This ships as knowco2-full-*.zip because the KnowCO2
       # Flasher's source policy fetches "latest published KnowCO2 full
       # release" by that exact name — it does not know about "production"
@@ -329,14 +330,14 @@ jobs:
 
           | File | Use when |
           |---|---|
-          | `knowco2-full-*.zip` | Fresh install on a factory/blank device — unzip onto your `CIRCUITPY` drive. Space-optimized (knowco2/ compiled to .mpy) to fit the 960 KB CIRCUITPY budget. **This is what the KnowCO2 Flasher fetches automatically.** |
+          | `knowco2-full-*.zip` | Fresh install on a factory/blank device — unzip onto the visible device volume (`CIRCUITPY` before KnowCO2 is installed; `KNOWCO2` in service mode afterward). Space-optimized (knowco2/ compiled to .mpy) to fit the 960 KB device-filesystem budget. **This is what the KnowCO2 Flasher fetches automatically.** |
           | `knowco2-dev-*.zip` | Fresh install or upgrade for developers who want to edit `knowco2/*.py` live on the device — plain, editable source instead of compiled bytecode. Larger; may not fit factory-blank boards. |
           | `knowco2-ota-*.zip` | OTA upgrade — upload at `http://knowco2-XXXX.local/update` |
           | `knowco2-source-*.zip` | Source code — for developers who want to read or modify the firmware |
 
           ## Installing CircuitPython (first time only)
-          The device needs CircuitPython **10.x** before this firmware will run.
-          Download the `.uf2` for the [Adafruit Feather ESP32-S3 Reverse TFT](https://circuitpython.org/board/adafruit_feather_esp32s3_reverse_tft/), double-tap reset to enter the bootloader, drag the `.uf2` onto the `FTHRS3BOOT` drive, then install this firmware using the full ZIP above.
+          The device needs the production-qualified CircuitPython runtime before this firmware will run (currently **10.2.1**).
+          Use the repository's matching board `.uf2`, double-tap reset to enter the bootloader, drag the `.uf2` onto the Feather bootloader volume named `FTHRS3BOOT`, then install this firmware using the full ZIP above. Hold physical button B during power-up/reset whenever you need to show the `KNOWCO2` service volume again.
 
           ## Checksums
           See `*-checksums.txt` attached below to verify your download.
