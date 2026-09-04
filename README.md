@@ -1,6 +1,6 @@
 # KnowCO2 Firmware — CircuitPython
 
-Firmware license: [MIT](LICENSE)
+KnowCO2-authored firmware is licensed under [MIT](LICENSE). Bundled dependencies remain under their respective upstream licenses; see [LICENSING.md](LICENSING.md) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Overview
 
@@ -127,6 +127,6 @@ The previous `code.py` is kept as `/code.py.bak` automatically.
 
 ## License
 
-This firmware is MIT licensed — see [LICENSE](LICENSE).
+KnowCO2-authored firmware is MIT licensed — see the canonical [MIT license text](LICENSE) and the [licensing map](LICENSING.md).
 
-The `lib/` directory contains pre-compiled Adafruit CircuitPython libraries distributed under their own MIT licenses. See the [Adafruit CircuitPython Bundle](https://github.com/adafruit/Adafruit_CircuitPython_Bundle) for individual library sources and license texts.
+The versioned `lib-*-release/` directory contains pre-compiled Adafruit CircuitPython libraries distributed under their respective upstream licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the bundled-component inventory, copyright notices, license terms, and source locations.
