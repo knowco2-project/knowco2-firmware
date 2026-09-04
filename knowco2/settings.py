@@ -312,8 +312,11 @@ def update_settings_from_params(params):
     if "device_id" in params and params["device_id"]:
         s["device_id"] = params["device_id"]
 
-    if "admin_pw" in params:
-        s["admin_password"] = params["admin_pw"] or ""
+    # A blank password field means "leave unchanged". Clearing protection must
+    # be a separate, explicit, physically authorized operation; otherwise an
+    # ordinary settings save silently disables authentication.
+    if "admin_pw" in params and params["admin_pw"]:
+        s["admin_password"] = params["admin_pw"]
 
     if "lang" in params and params["lang"] in (
         "en", "es", "fr", "de", "pt", "it", "nl", "sv", "pl", "cs",

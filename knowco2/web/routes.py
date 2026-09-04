@@ -32,7 +32,7 @@ from .api_v1_contract import (
 from .http_util import (
     send_all, build_response, make_json_response, make_html_response,
     parse_query, url_decode, read_request_head, read_request_body,
-    stream_request_body_to_file, CAPTIVE_PATHS_204,
+    stream_request_body_to_file, request_source_allowed, CAPTIVE_PATHS_204,
 )
 
 try:
@@ -74,6 +74,17 @@ def _request_content_length(request_raw):
         return int(_header_value(request_raw, "content-length") or 0)
     except Exception:
         return -1
+
+
+def _allowed_management_hosts():
+    """Return the exact local names that may address a mutating request."""
+    hosts = ["192.168.4.1"]
+    if state.ip_str_cached:
+        hosts.append(state.ip_str_cached)
+    if state.mdns_hostname:
+        hosts.append(state.mdns_hostname)
+        hosts.append(state.mdns_hostname + ".local")
+    return hosts
 
 
 def _api_error(conn, status, code, message):
@@ -624,7 +635,9 @@ def handle_status_route(conn):
     except Exception:
         pass
 
-    header, body = make_json_response(payload, cors=True)
+    # Status contains operational diagnostics and stable identifiers. Keep it
+    # same-origin so an arbitrary page cannot inventory a reachable device.
+    header, body = make_json_response(payload, cors=False)
     send_all(conn, header)
     send_all(conn, body)
 
@@ -1967,6 +1980,14 @@ def handle_http_client():
             send_all(conn, body)
             return
 
+        if method in (b"POST", b"PATCH") and not request_source_allowed(
+                data, _allowed_management_hosts()):
+            _api_error(
+                conn, 403, "invalid_request_source",
+                "Host or browser request source is not allowed",
+            )
+            return
+
         route, params = parse_query(path)
 
         _is_ota_upload = (route == "/update" and "upload" in params)
@@ -2046,8 +2067,10 @@ def handle_http_client():
             handle_calibration_route(conn, params, method=method)
         elif route == "/update":
             handle_update_route(conn, params, method=method, raw_headers=data)
-        else:
+        elif route == "/":
             handle_root_route(conn, params, method=method)
+        else:
+            _api_error(conn, 404, "not_found", "Unknown local route")
 
     except Exception as e:
         log("http_err", "HTTP error:", e, min_interval=1.0)
