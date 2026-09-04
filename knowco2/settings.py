@@ -54,7 +54,10 @@ DEFAULT_SETTINGS = {
     # mqtt_enabled: publish CO2/temp/RH to a standard MQTT broker.
     "mqtt_enabled": False,
     "mqtt_broker": "",           # hostname or IP
-    "mqtt_port": 1883,
+    "mqtt_port": 8883,
+    # Secure by default. Advanced anonymous-only local brokers may opt out by
+    # editing settings directly; credentialed plaintext MQTT is always refused.
+    "mqtt_use_tls": True,
     "mqtt_user": "",
     "mqtt_pass": "",
     "mqtt_topic_prefix": "knowco2",  # topics: <prefix>/co2, /temp_c, /rh

@@ -8,6 +8,11 @@
 import gc
 import json
 
+try:
+    import ssl
+except ImportError:
+    ssl = None
+
 from .. import state, version
 from ..helpers import log
 
@@ -27,7 +32,7 @@ except Exception:
     print("adafruit_minimqtt not available; MQTT/AIO disabled")
 
 
-def _publish_one(broker, port, user, password, topics_payloads, use_ssl=False):
+def _publish_one(broker, port, user, password, topics_payloads, use_ssl=True):
     """Connect, publish a list of (topic, payload, retain) tuples, disconnect."""
     if not _HAS_MQTT or MQTT is None:
         return False
@@ -48,6 +53,19 @@ def _publish_one(broker, port, user, password, topics_payloads, use_ssl=False):
             pool = socketpool.SocketPool(wifi.radio)
         else:
             return False
+    ssl_context = None
+    if use_ssl:
+        if ssl is None:
+            log("mqtt_tls", "MQTT TLS unavailable; refusing connection", min_interval=30.0)
+            return False
+        try:
+            # CircuitPython's default context validates the server certificate
+            # and hostname. Never silently retry without TLS.
+            ssl_context = ssl.create_default_context()
+        except Exception as e:
+            log("mqtt_tls", "MQTT TLS setup failed:", e, min_interval=30.0)
+            return False
+
     try:
         client = MQTT.MQTT(
             broker=broker,
@@ -55,7 +73,7 @@ def _publish_one(broker, port, user, password, topics_payloads, use_ssl=False):
             username=user or None,
             password=password or None,
             socket_pool=pool,
-            ssl_context=None,
+            ssl_context=ssl_context,
             connect_retries=1,
             socket_timeout=5,
             keep_alive=15,
@@ -81,9 +99,17 @@ def publish_to_mqtt():
     broker = s.get("mqtt_broker", "").strip()
     if not broker:
         return False
-    port = s.get("mqtt_port", 1883)
+    port = s.get("mqtt_port", 8883)
     user = s.get("mqtt_user", "")
     password = s.get("mqtt_pass", "")
+    use_ssl = bool(s.get("mqtt_use_tls", True))
+    if not use_ssl and (user or password):
+        log(
+            "mqtt_plaintext",
+            "Refusing MQTT credentials without TLS",
+            min_interval=30.0,
+        )
+        return False
     prefix = (s.get("mqtt_topic_prefix", "knowco2") or "knowco2").strip()
     topics = []
     if state.last_co2 is not None:
@@ -95,11 +121,12 @@ def publish_to_mqtt():
     if not topics:
         return False
     publish_mqtt_discovery()
-    ok = _publish_one(broker, port, user, password, topics)
+    ok = _publish_one(broker, port, user, password, topics, use_ssl=use_ssl)
     if ok:
         log("mqtt", "MQTT published to", broker, min_interval=30.0)
     else:
         log("mqtt_err", "MQTT publish failed to", broker, min_interval=30.0)
+    return ok
 
 
 def publish_mqtt_discovery():
@@ -111,9 +138,17 @@ def publish_mqtt_discovery():
     broker = s.get("mqtt_broker", "").strip()
     if not broker:
         return
-    port = s.get("mqtt_port", 1883)
+    port = s.get("mqtt_port", 8883)
     user = s.get("mqtt_user", "")
     pw = s.get("mqtt_pass", "")
+    use_ssl = bool(s.get("mqtt_use_tls", True))
+    if not use_ssl and (user or pw):
+        log(
+            "mqtt_plaintext",
+            "Refusing MQTT discovery credentials without TLS",
+            min_interval=30.0,
+        )
+        return
     prefix = (s.get("mqtt_topic_prefix", "knowco2") or "knowco2").strip()
     uid = (state.hwid_hex or s.get("device_id", "co2-node-1") or "co2-node-1").lower()
     device = {
@@ -140,7 +175,7 @@ def publish_mqtt_discovery():
             "device": device,
         })
         topics.append((cfg_topic, payload, True))
-    ok = _publish_one(broker, port, user, pw, topics)
+    ok = _publish_one(broker, port, user, pw, topics, use_ssl=use_ssl)
     if ok:
         state.mqtt_discovery_sent = True
         log("mqtt", "HA MQTT discovery published", min_interval=60.0)
@@ -166,7 +201,9 @@ def publish_to_adafruit_io():
         topics.append(("%s/feeds/%s.humidity" % (aio_user, group), "%.2f" % state.last_rh, False))
     if not topics:
         return False
-    ok = _publish_one("io.adafruit.com", 1883, aio_user, aio_key, topics)
+    ok = _publish_one(
+        "io.adafruit.com", 8883, aio_user, aio_key, topics, use_ssl=True
+    )
     if ok:
         log("aio", "Adafruit IO published", min_interval=30.0)
     else:
