@@ -3,6 +3,7 @@ import displayio
 import digitalio
 import storage
 import time
+import usb_cdc
 import usb_hid
 import usb_midi
 
@@ -11,13 +12,14 @@ import usb_midi
 #
 # Default behavior:
 #   - Hide the USB mass-storage drive so the board does not show as CIRCUITPY
+#   - Disable the USB CDC console/REPL
 #   - Keep the filesystem available for normal CircuitPython file writes
 #   - Disable USB HID (keyboard/mouse) and MIDI. Neither is used by the
 #     firmware, and an enumerated HID keyboard makes iOS hide its on-screen
 #     keyboard whenever the device is plugged in for power.
 #
 # Override:
-#   - Hold D1 at power-up / reset to keep the USB drive visible
+#   - Hold D1 at power-up / reset to keep the USB drive and console visible
 # -----------------------------------------------------------------------------
 
 # Suppress the CircuitPython REPL terminal on the built-in TFT as early as possible,
@@ -28,8 +30,7 @@ try:
 except Exception:
     pass
 
-# Unconditional: applies whether or not the D1 override is held. USB CDC
-# serial is left enabled so the REPL and print() debugging still work.
+# HID and MIDI are unused in both retail and maintenance profiles.
 try:
     usb_hid.disable()
 except Exception:
@@ -51,10 +52,17 @@ try:
     time.sleep(0.05)
 
     if override.value:
-        # Override held: host (Mac/PC) gets write access by default. Do not remount.
+        # Physical maintenance profile: the host keeps the default CircuitPython
+        # console and writable CIRCUITPY drive. Physical possession is trusted in
+        # this explicitly selected mode.
         pass
     else:
-        # Default behavior: make sure the filesystem is writable, then hide USB storage.
+        # Retail profile: no REPL/console and no host-mounted CIRCUITPY drive.
+        # The firmware still keeps its own filesystem writable for settings.
+        try:
+            usb_cdc.disable()
+        except Exception:
+            pass
         try:
             storage.remount("/", readonly=False)
         except Exception:
