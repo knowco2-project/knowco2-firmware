@@ -1,6 +1,6 @@
 # knowco2/ids.py
 # ----------------------------------------------------------------------
-# Device identity: hardware UID, board id, pairing code, mDNS hostname.
+# Device identity: hardware UID, board id, and mDNS hostname.
 # (The sensor serial number now comes from the sensor driver's
 # read_serial(), so it no longer lives here.)
 # ----------------------------------------------------------------------
@@ -8,7 +8,7 @@
 import binascii
 
 from . import state
-from .helpers import rand_token, rand_safe32
+from .helpers import rand_token
 
 try:
     import microcontroller
@@ -36,15 +36,9 @@ def init_ids():
         state.hwid_hex = None
 
 
-def init_pair_code():
-    base = (state.hwid_hex or rand_token(4))
-    tail = base[-6:] if len(base) >= 6 else base
-    state.pair_code = (tail + rand_safe32(2))[:8]
-
-
 def init_mdns_hostname():
     # DNS-safe, short + readable: knowco2-xxxx
-    base = (state.hwid_hex or state.pair_code or rand_token(4))
+    base = (state.hwid_hex or rand_token(4))
     suffix = (base[-4:] if len(base) >= 4 else base).lower()
     state.mdns_hostname = ("knowco2-" + suffix).replace("_", "-")
 

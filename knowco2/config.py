@@ -51,6 +51,15 @@ CLOUD_OK_TTL = 300.0
 _STA_AUTO_RETRY_INTERVAL = 90.0
 _STA_AUTO_RETRY_MAX = 10
 
+# Fast onboarding. Claim exchange and telemetry remain pinned to the compiled
+# KnowCO2 API origin; a response may only confirm this exact origin.
+CLOUD_ACTIVATION_BASE_URL = "https://api.knowco2.com"
+CLOUD_ACTIVATION_PATH = "/v1/devices/activate"
+CLOUD_ACTIVATION_TIMEOUT_S = 8
+CLOUD_ACTIVATION_RETRY_MIN_S = 15
+CLOUD_ACTIVATION_RETRY_MAX_S = 5 * 60
+ONBOARDING_CONNECT_DELAY_S = 1.5
+
 # ── NTP ─────────────────────────────────────────────────────────────
 NTP_HOSTS = ("time.cloudflare.com", "time.google.com", "pool.ntp.org")
 NTP_PORT = 123

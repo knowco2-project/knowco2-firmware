@@ -223,7 +223,11 @@ def switch_to_sta():
         runtime.show_status('HTTP: error')
     start_mdns_if_possible()
 
-    state.ntp_sync_pending = True  # kick NTP soon after STA comes up
+    # Make the first NTP query eligible immediately. Without resetting this
+    # deadline, a newly booted device can sit in the generic 60-second retry
+    # cooldown before its first TLS-valid clock sync and cloud activation.
+    state.ntp_sync_pending = True
+    state.last_ntp_attempt = time.monotonic() - config.NTP_MIN_RETRY_S
 
     if state.screen == config.SCREEN_APINFO:
         runtime.refresh_apinfo_screen()

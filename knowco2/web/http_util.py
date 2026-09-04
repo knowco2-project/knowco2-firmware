@@ -82,12 +82,17 @@ def build_response(status_code, content_type, body_bytes=b"", cors=False):
     (drive-by settings/OTA abuse)."""
     reason = {
         200: "OK",
+        202: "Accepted",
         204: "No Content",
         302: "Found",
         400: "Bad Request",
+        401: "Unauthorized",
+        403: "Forbidden",
         404: "Not Found",
         405: "Method Not Allowed",
+        409: "Conflict",
         413: "Payload Too Large",
+        422: "Unprocessable Content",
         500: "Internal Server Error",
         503: "Service Unavailable",
     }.get(status_code, "OK")

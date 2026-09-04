@@ -73,12 +73,7 @@ def render_settings_page():
     # Embed colorblind_mode so the canvas chart uses the same palette as the device.
     web_cb_mode = "true" if settings.get("colorblind_mode", False) else "false"
 
-    cloud_enabled_checked = "checked" if settings.get("cloud_enabled", False) else ""
-    cloud_api = settings.get("cloud_api_url", "")
-    # If no cloud API URL is stored yet, prefill with the default knowco2 API endpoint.
-    if not cloud_api:
-        cloud_api = "https://api.knowco2.com"
-    cloud_api = esc_attr(cloud_api)
+    cloud_status_text = "enabled" if settings.get("cloud_enabled", False) else "disabled"
 
     # MQTT section
     mqtt_enabled = settings.get("mqtt_enabled", False)
@@ -120,22 +115,19 @@ def render_settings_page():
     if wifi_mode == WIFI_MODE_STA and mdns_hostname:
         mdns_hint = f"<br><small class='muted'>On your home Wi-Fi, you can also use <span class='code'>http://{mdns_hostname}.local/</span>.</small>"
 
-    # Build the settings page HTML.  If an admin password is configured, include it as a
-    # hidden field named "pw" so that the password is preserved across form submissions.
-    pw_hidden_field = ""
+    # Never reflect the configured admin password into HTML. When protection is
+    # enabled, require a fresh confirmation for each legacy form write.
+    pw_confirm_field = ""
     try:
         _admin_pw = settings.get("admin_password", "")
         if _admin_pw:
-            # Always HTML-escape the password value for safety.  We avoid importing
-            # urllib here by manually replacing special characters that could break
-            # the attribute.  The password should not contain quotes because the
-            # input field for admin_pw is of type password.
-            esc_pw = _admin_pw.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            # Embed the escaped password directly into the value attribute.  Use double
-            # quotes around the value to avoid breaking the surrounding HTML.
-            pw_hidden_field = "<input type=\"hidden\" name=\"pw\" value=\"" + esc_pw + "\">\n"
+            pw_confirm_field = (
+                '<label><span class="lbl">Confirm settings password to save</span>'
+                '<input type="password" name="pw" maxlength="64" '
+                'autocomplete="current-password" value=""></label>'
+            )
     except Exception:
-        pw_hidden_field = ""
+        pw_confirm_field = ""
 
     html = """<!DOCTYPE html>
 <html lang=\"""" + current_lang + """\" translate="yes">
@@ -219,7 +211,6 @@ def render_settings_page():
         Device ID: <code id="status-device-id">""" + device_id + """</code>
         <div style="margin-top:8px;font-size:12px;color:#ccc;">
           <div>Battery: <span id="status-batt">--</span></div>
-          <div>Pair code (setup): <code id="status-pair">--</code></div>
           <div>mDNS: <code id="status-mdns">--</code></div>
         </div>
       </div>
@@ -231,7 +222,29 @@ def render_settings_page():
       <div id="chart-debug"></div>
     </div>
 
-    <form method="POST" action="/">""" + pw_hidden_field + """
+    <section aria-labelledby="fast-setup-title">
+      <h2 id="fast-setup-title">Fast device setup</h2>
+      <fieldset>
+        <legend>Connect in one step</legend>
+        <p class="help-text">Enter Wi-Fi below. To add KnowCO2 Cloud without the app, first create a one-time code in your cloud account and enter it here. The mobile app can fill this automatically.</p>
+        <form id="onboarding-form">
+          <label for="quick-ssid"><span class="lbl">Wi-Fi network</span>
+            <input id="quick-ssid" type="text" maxlength="32" required autocomplete="off">
+          </label>
+          <label for="quick-password"><span class="lbl">Wi-Fi password</span>
+            <input id="quick-password" type="password" minlength="8" maxlength="63" required autocomplete="new-password">
+          </label>
+          <label for="quick-claim"><span class="lbl">Cloud one-time code (optional)</span>
+            <input id="quick-claim" type="text" inputmode="text" maxlength="9" autocapitalize="characters" autocomplete="one-time-code" placeholder="ABCD-EFGH">
+          </label>
+          <button id="onboarding-submit" type="submit" class="btn btn-primary btn-block">Connect device</button>
+          <p id="onboarding-result" class="help-text" role="status" aria-live="polite"></p>
+        </form>
+        <noscript><p class="warn-text">JavaScript is unavailable. Save Wi-Fi in Advanced settings below, then hold D2 to connect.</p></noscript>
+      </fieldset>
+    </section>
+
+    <form method="POST" action="/">""" + pw_confirm_field + """
       <h2>CO2 &amp; Graph</h2>
       <fieldset>
         <legend>Thresholds</legend>
@@ -346,7 +359,7 @@ def render_settings_page():
         </label>
 
         <div class="row" style="margin-top:10px;">
-          <button type="button" class="btn btn-primary" onclick="location.href='/?regen_ap=1'"
+          <button type="submit" name="regen_ap" value="1" class="btn btn-primary"
                   data-i18n="lbl_regen">
             Regenerate AP credentials
           </button>
@@ -406,50 +419,25 @@ def render_settings_page():
       </fieldset>
 
       <h2>Cloud telemetry</h2>
+      <details>
+      <summary style="cursor:pointer">Advanced cloud controls</summary>
       <fieldset>
         <legend data-i18n='sec_cloud'>API data ingest</legend>
         <p class="help-text" data-i18n="help_cloud">Send CO&#x2082; readings to the Know CO&#x2082; cloud dashboard.</p>
-        <small class="muted">Onboard your device at <a href=\"https://cloud.knowco2.com\">https://cloud.knowco2.com</a> register and generate a device id and secret to enter.</small>
-        <label class="check-label">
-          <input type="checkbox" name="cloud_enabled" value="on" """ + cloud_enabled_checked + """
-                 data-i18n-aria="aria_cloud_check">
-          <span data-i18n="lbl_cloud_en">Enable cloud uploads (requires STA Wi-Fi + token)</span>
-        </label>
-
-        <label for="field-cloud-url">
-          <span class="lbl" data-i18n="lbl_cloud_url">Cloud API URL</span>
-          <input id="field-cloud-url" type="text" name="cloud_api_url" maxlength="200"
-                 data-i18n-placeholder="ph_cloud_url" placeholder="https://api.knowco2.com/v1/ingest"
-                 value='""" + cloud_api + """'>
-        </label>
-
-        <label for="field-cloud-token">
-          <span class="lbl" data-i18n="lbl_cloud_token">Device token (secret)</span>
-          <input id="field-cloud-token" type="password" name="cloud_device_token" maxlength="128"
-                 data-i18n-placeholder="ph_cloud_token" placeholder="Paste your device token here" value="">
-          <span class="help-text" data-i18n="lbl_cloud_secret">Device secret / token</span>
-        </label>
-        <small>Paste token once. It is stored on device and not shown again.</small>
-
-        <label for="field-device-id">
-          <span class="lbl" data-i18n="lbl_device_id">Device ID</span>
-          <input id="field-device-id" type="text" name="device_id" maxlength="40"
-                 data-i18n-placeholder="ph_device_id" placeholder="co2-node-1"
-                 aria-describedby="help-device-id"
-                 value='""" + device_id + """'>
-          <span class="help-text" id="help-device-id" data-i18n="help_device_id">Identifier sent with cloud and MQTT data.</span>
-        </label>
+        <small class="muted">Fast setup securely installs the permanent credential without ever showing it here. Existing credentials are preserved during firmware upgrades.</small>
+        <p>Cloud uploads: <strong>""" + cloud_status_text + """</strong></p>
+        <button type="button" class="btn btn-primary" onclick="setCloudEnabled(true)">Enable uploads</button>
+        <button type="button" class="btn" onclick="setCloudEnabled(false)">Disable uploads</button>
 
         <label for="field-cloud-interval">
           <span class="lbl" data-i18n="lbl_cloud_interval">Upload interval (seconds)</span>
           <input id="field-cloud-interval" type="number" name="cloud_interval_sec" min="15" max="3600"
                  value='""" + str(int(settings.get("cloud_interval_sec", 60))) + """'>
         </label>
-        <small class="muted">
-          Pairing: create an account, then enter this device's <b>Pair code</b>.
-          The cloud app returns a device token you paste here.
-        </small>
+        <button type="button" class="btn btn-danger" onclick="forgetCloudCredentials()">Forget local cloud credentials</button>
+        <small class="muted">This only forgets credentials on this device. Remove or release ownership separately in your cloud account.</small>
       </fieldset>
+      </details>
 
       <!-- Device identity section removed; Device ID is now under Cloud telemetry and local endpoints moved to bottom. -->
 
@@ -565,6 +553,71 @@ def render_settings_page():
     const initialPoints = """ + initial_json + """;
     const CB_MODE = """ + web_cb_mode + """;
 
+    function apiPost(path, payload, done) {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', path, true);
+      xhr.timeout = 6000;
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState !== 4) return;
+        let parsed = null;
+        try { parsed = JSON.parse(xhr.responseText); } catch (e) {}
+        done(xhr.status, parsed);
+      };
+      xhr.ontimeout = function() { done(0, null); };
+      xhr.onerror = function() { done(0, null); };
+      xhr.send(JSON.stringify(payload));
+    }
+
+    const onboardingForm = document.getElementById('onboarding-form');
+    if (onboardingForm) onboardingForm.addEventListener('submit', function(event) {
+      event.preventDefault();
+      const result = document.getElementById('onboarding-result');
+      const button = document.getElementById('onboarding-submit');
+      const ssid = document.getElementById('quick-ssid').value.trim();
+      const password = document.getElementById('quick-password').value;
+      const code = document.getElementById('quick-claim').value.trim();
+      const payload = {wifi:{ssid:ssid,password:password},connect:true};
+      if (code) payload.cloud = {claim_code:code};
+      button.disabled = true;
+      result.textContent = 'Saving securely…';
+      apiPost('/api/v1/onboarding', payload, function(status, response) {
+        button.disabled = false;
+        if (status === 200 || status === 202) {
+          document.getElementById('quick-password').value = '';
+          document.getElementById('quick-claim').value = '';
+          result.textContent = 'Saved. The setup network will disconnect while KnowCO2 joins your Wi-Fi and activates cloud service.';
+          return;
+        }
+        const message = response && response.error && response.error.message;
+        result.textContent = message || 'Setup failed. Stay connected to the KnowCO2 network and try again.';
+      });
+    });
+
+    function forgetCloudCredentials() {
+      if (!confirm('Forget cloud credentials stored on this device? Cloud account ownership is not removed.')) return;
+      apiPost('/api/v1/cloud/credentials/forget', {}, function(status, response) {
+        if (status === 200) {
+          alert('Local cloud credentials forgotten.');
+          location.reload();
+        } else {
+          const message = response && response.error && response.error.message;
+          alert(message || 'Switch to the device setup AP and try again.');
+        }
+      });
+    }
+
+    function setCloudEnabled(enabled) {
+      apiPost('/api/v1/cloud/enabled', {enabled:enabled}, function(status, response) {
+        if (status === 200) {
+          location.reload();
+        } else {
+          const message = response && response.error && response.error.message;
+          alert(message || 'Switch to the device setup AP and try again.');
+        }
+      });
+    }
+
     // Color palettes — matches the device firmware schemes exactly.
     const PAL_NORMAL = { low: '#00e676', med: '#fff176', alert: '#ff5252',
                          zoneLow: '#00e676', zoneMed: '#fff176', zoneHigh: '#ff5252' };
@@ -583,7 +636,6 @@ def render_settings_page():
     const statusQualityEl = document.getElementById('status-quality');
     const statusDeviceEl = document.getElementById('status-device-id');
     const statusBattEl  = document.getElementById('status-batt');
-    const statusPairEl  = document.getElementById('status-pair');
     const statusMdnsEl  = document.getElementById('status-mdns');
     const statusRateEl  = document.getElementById('status-rate');
 
@@ -754,7 +806,6 @@ def render_settings_page():
       statusTempEl.textContent = (typeof s.temp_display === 'number') ? s.temp_display.toFixed(1) : '--.-';
       statusRhEl.textContent = (typeof s.rh === 'number') ? s.rh.toFixed(1) : '--.-';
       statusDeviceEl.textContent = s.device_id || 'co2-node';
-      statusPairEl.textContent = s.pair_code || '--';
       statusMdnsEl.textContent = s.mdns || '--';
 
       let badgeClass = 'badge';

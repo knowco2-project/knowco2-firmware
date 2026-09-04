@@ -41,6 +41,8 @@ jobs:
           python3 test_graph_perf.py
           python3 test_buttons.py
           python3 test_web_onboarding.py
+          python3 -m unittest test_api_v1_contract.py
+          python3 test_provisioning.py
 
   ota-staged-install:
     name: OTA staged install
