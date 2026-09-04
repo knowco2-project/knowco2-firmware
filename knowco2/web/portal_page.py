@@ -825,7 +825,12 @@ def render_settings_page():
 <script>
 """ + _i18n.build_translations_js() + """
 function applyLang(lang){
+  // localStorage is shared by captive portals at the same origin. A cached
+  // extra locale may therefore be unavailable in this device's response.
+  // Never label an English fallback as if it were the missing locale.
+  if (!T[lang]) lang = T[_KCO2_CURRENT_LANG] ? _KCO2_CURRENT_LANG : 'en';
   var t = T[lang] || T['en'];
+  _kco2Dir(lang);
   // Update the document language for screen readers
   document.documentElement.lang = lang;
   // Update the page <title>
@@ -860,10 +865,42 @@ function applyLang(lang){
   if (sel) sel.value = lang;
   localStorage.setItem('kco2_lang', lang);
 }
+function submitLanguageOnly(lang, sourceForm){
+  // Build a separate allow-listed form. Submitting sourceForm would persist
+  // every partially edited setting and bypass browser constraint validation.
+  var f = document.createElement('form');
+  f.method = 'POST';
+  f.action = '/';
+  function addField(name, value){
+    var input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    f.appendChild(input);
+  }
+  addField('lang_only', '1');
+  addField('lang', lang);
+  // Preserve authorization when the settings page is password-protected.
+  if (sourceForm) {
+    var pw = sourceForm.querySelector('input[name=pw]');
+    if (pw) addField('pw', pw.value);
+  }
+  localStorage.setItem('kco2_lang', lang);
+  document.body.appendChild(f);
+  f.submit();
+}
 (function(){
-  var saved = localStorage.getItem('kco2_lang') || '""" + current_lang + """';
+  var saved = localStorage.getItem('kco2_lang') || _KCO2_CURRENT_LANG;
+  if (!T[saved]) saved = T[_KCO2_CURRENT_LANG] ? _KCO2_CURRENT_LANG : 'en';
   var sel = document.querySelector('select[name=lang]');
-  if (sel) sel.addEventListener('change', function(){ applyLang(this.value); });
+  if (sel) sel.addEventListener('change', function(){
+    var requested = this.value;
+    if (_EXTRA[requested] && !T[requested]) {
+      submitLanguageOnly(requested, this.form);
+      return;
+    }
+    applyLang(requested);
+  });
   applyLang(saved);
 })();
 </script>
