@@ -231,7 +231,6 @@ def check_battery_boot():
 #  BOOT SEQUENCE
 # ======================================================================
 ids.init_ids()
-ids.init_pair_code()
 ids.init_mdns_hostname()
 
 # Safe-mode auto-recovery: install/refresh /safemode.py and record how many
@@ -601,6 +600,15 @@ while True:
             state.last_ntp_attempt = now
             _busy("ntp", ntp_mod.ntp_sync, False)
 
+        # A local setup client may queue a short-lived cloud claim while the
+        # device is still serving its AP. Exchange it only after STA and time
+        # sync are ready so certificate validation can succeed on the first
+        # attempt. The exchange performs one timeout-bounded HTTPS request and
+        # maintains its own exponential retry deadline.
+        if (state.ntp_synced and state.pending_cloud_claim
+                and now >= state.cloud_activation_next_attempt):
+            _busy("pair", cloud_mod.activate_pending_claim)
+
         # Cloud upload (periodic) - STA only
         if state.cloud_enabled and state.wifi_mode == config.WIFI_MODE_STA:
             interval = cloud_mod.cloud_next_interval()
@@ -765,4 +773,18 @@ while True:
 
     web.handle_http_client()
     buttons.scan()  # pick up anything that arrived while serving the web UI
+
+    # Fast onboarding defers AP -> STA until after the complete JSON response
+    # has been written and the client socket has closed. If connection fails,
+    # restore the setup AP and retain normal bounded background retries.
+    if (state.onboarding_connect_after > 0.0
+            and time.monotonic() >= state.onboarding_connect_after):
+        state.onboarding_connect_after = 0.0
+        if state.wifi_mode == config.WIFI_MODE_AP:
+            if _busy("wifi", wifi_mod.switch_to_sta):
+                state._sta_fallback = False
+                state._sta_auto_retry_count = 0
+            else:
+                state._sta_fallback = True
+                _busy("wifi", wifi_mod.switch_to_ap, True)
     time.sleep(config.ENERGY_LP_SLEEP_S if state.energy_mode else 0.01)

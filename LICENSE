@@ -24,7 +24,8 @@ SOFTWARE.
 
 Third-party libraries in lib-*/ are pre-compiled from the Adafruit CircuitPython
 Bundle (https://github.com/adafruit/Adafruit_CircuitPython_Bundle) and are
-distributed under their own MIT licenses; see that repository for individual
-license texts.
+distributed under their own licenses. Their copyright notices, source links,
+and license terms are recorded in THIRD_PARTY_NOTICES.md. Distribute that file
+with every release package that contains these libraries.
 
 SPDX-License-Identifier: MIT

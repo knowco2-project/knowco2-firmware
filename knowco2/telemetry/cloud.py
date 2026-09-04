@@ -38,8 +38,14 @@ import json
 import time
 
 from .. import state, config, runtime, crypto
+from .. import settings as settings_mod
 from ..net import wifi as wifi_mod
 from ..helpers import log, clamp_int
+from ..web.api_v1_contract import (
+    activation_request_payload,
+    normalize_activation_response,
+    normalize_claim_request,
+)
 
 try:
     import wifi
@@ -192,6 +198,221 @@ def cloud_next_interval():
     return clamp_int(backoff, 15, config.CLOUD_MAX_BACKOFF, backoff)
 
 
+def _device_serial():
+    """Return the provisioned product serial when one is available."""
+    for key in ("serial", "serial_number", "device_serial"):
+        value = str(state.settings.get(key) or "").strip()
+        if value:
+            return value[:64]
+    # Production tooling historically stored KC2 serials in device_id.
+    value = str(state.settings.get("device_id") or "").strip()
+    if value.upper().startswith("KC2-"):
+        return value[:64]
+    return None
+
+
+def _activation_retry(reason):
+    """Record a transient failure and schedule a bounded-rate retry."""
+    state.cloud_activation_state = "pending"
+    state.cloud_activation_error = reason
+    state.cloud_activation_failures += 1
+    exponent = min(state.cloud_activation_failures - 1, 5)
+    delay = config.CLOUD_ACTIVATION_RETRY_MIN_S * (2 ** max(0, exponent))
+    delay = min(delay, config.CLOUD_ACTIVATION_RETRY_MAX_S)
+    state.cloud_activation_next_attempt = time.monotonic() + delay
+
+
+def _clear_pending_claim(new_state, reason=""):
+    """Delete the temporary bearer from RAM."""
+    state.pending_cloud_claim = None
+    state.cloud_activation_request_id = None
+    state.cloud_activation_state = new_state
+    state.cloud_activation_error = reason
+    state.cloud_activation_next_attempt = 0.0
+    if new_state != "pending":
+        state.cloud_activation_failures = 0
+    return True
+
+
+def activate_pending_claim():
+    """Exchange one queued claim for the permanent ingest credential.
+
+    This function performs at most one HTTPS request with an eight-second
+    timeout. The main loop invokes it only when its monotonic retry deadline is
+    due, so an outage cannot create a tight loop or starve sensor sampling.
+    Temporary credentials are never included in serial logs or status payloads.
+    """
+    pending = state.pending_cloud_claim
+    if not pending:
+        if state.cloud_device_token:
+            state.cloud_activation_state = "configured"
+        return False
+    try:
+        pending = normalize_claim_request(pending)
+    except ValueError:
+        _clear_pending_claim("error", "invalid_local_claim")
+        return False
+
+    if state.wifi_mode != config.WIFI_MODE_STA:
+        state.cloud_activation_state = "pending"
+        return False
+    if time.monotonic() < state.cloud_activation_next_attempt:
+        return False
+
+    serial = _device_serial()
+    if not wifi_mod.ensure_sta_connected():
+        _activation_retry("network_unavailable")
+        return False
+
+    idf_free, idf_big = idf_heap_info()
+    state.idf_free = idf_free
+    state.idf_largest_block = idf_big
+    if idf_big is not None and idf_big < config.CLOUD_TLS_MIN_LARGEST_BLOCK:
+        teardown_session("activation internal heap low")
+        _activation_retry("memory_unavailable")
+        return False
+
+    try:
+        if not state.cloud_activation_request_id:
+            # Backward defensive path; normal API queueing sets this once.
+            from ..helpers import rand_token
+            state.cloud_activation_request_id = rand_token(32)
+        request_payload = activation_request_payload(
+            temporary_credential=pending,
+            hardware_id=state.hwid_hex,
+            board_id=state.board_id_str,
+            serial=serial,
+            firmware_version=version_string(),
+            request_id=state.cloud_activation_request_id,
+        )
+    except ValueError:
+        _clear_pending_claim("error", "invalid_local_claim")
+        return False
+
+    session = _get_session()
+    if session is None:
+        _activation_retry("network_unavailable")
+        return False
+
+    body = json.dumps(request_payload, separators=(",", ":"))
+    url = config.CLOUD_ACTIVATION_BASE_URL + config.CLOUD_ACTIVATION_PATH
+    headers = {"content-type": "application/json"}
+    response = None
+    state.cloud_activation_state = "activating"
+    if state._wd is not None:
+        try:
+            state._wd.feed()
+        except Exception:
+            pass
+
+    try:
+        response = session.post(
+            url,
+            data=body,
+            headers=headers,
+            timeout=config.CLOUD_ACTIVATION_TIMEOUT_S,
+        )
+        status = int(response.status_code)
+        # Never log the response body: success contains the permanent secret
+        # and error responses may include credential-derived diagnostics.
+        log("activate", "cloud activation HTTP", status, min_interval=2.0)
+
+        if status == 200:
+            raw = response.text or ""
+            if len(raw) > 2048:
+                _activation_retry("invalid_cloud_response")
+                return False
+            try:
+                activated = normalize_activation_response(json.loads(raw))
+            except (ValueError, TypeError):
+                _activation_retry("invalid_cloud_response")
+                return False
+
+            old = {
+                "device_id": state.settings.get("device_id"),
+                "cloud_device_id": state.settings.get("cloud_device_id"),
+                "cloud_device_token": state.settings.get("cloud_device_token"),
+                "cloud_api_url": state.settings.get("cloud_api_url"),
+                "cloud_enabled": state.settings.get("cloud_enabled"),
+            }
+            # Preserve the manufacturing/local ID. Cloud's operational ID is
+            # a separate namespace and is used for ingest after activation.
+            state.settings["cloud_device_id"] = activated["device_id"]
+            state.settings["cloud_device_token"] = activated["device_secret"]
+            # Activation credentials are sent only to the compiled origin and
+            # ingest remains pinned there even if a malformed response tries to
+            # redirect the device elsewhere.
+            returned_url = activated.get("cloud_api_url", "").rstrip("/")
+            if returned_url == config.CLOUD_ACTIVATION_BASE_URL:
+                state.settings["cloud_api_url"] = returned_url
+            else:
+                state.settings["cloud_api_url"] = config.CLOUD_ACTIVATION_BASE_URL
+            state.settings["cloud_enabled"] = True
+
+            if not settings_mod.save_settings():
+                for key, value in old.items():
+                    state.settings[key] = value
+                settings_mod.apply_settings()
+                _activation_retry("storage_unavailable")
+                return False
+
+            settings_mod.apply_settings()
+            state.pending_cloud_claim = None
+            state.cloud_activation_request_id = None
+            state.cloud_activation_state = "configured"
+            state.cloud_activation_error = ""
+            state.cloud_activation_failures = 0
+            state.cloud_activation_next_attempt = 0.0
+            runtime.show_status("Cloud: activated")
+            return True
+
+        # The credential is invalid, expired, already consumed, or forbidden.
+        # Retrying would both retain a bearer unnecessarily and add load.
+        if status in (400, 401, 403, 404, 409, 410, 422):
+            _clear_pending_claim("error", "claim_rejected")
+            runtime.show_status("Cloud: pairing expired")
+            return False
+
+        # Rate limits and service failures are transient; retain the claim but
+        # back off. A cloud 410 response is the authoritative expiry signal.
+        _activation_retry("cloud_unavailable")
+        return False
+
+    except (MemoryError, RuntimeError) as exc:
+        teardown_session("activation transport reset")
+        _record_failure(exc)
+        _activation_retry("memory_unavailable")
+        return False
+    except Exception:
+        _activation_retry("network_unavailable")
+        return False
+    finally:
+        try:
+            if response is not None:
+                response.close()
+        except Exception:
+            pass
+        try:
+            gc.collect()
+        except Exception:
+            pass
+        if state._wd is not None:
+            try:
+                state._wd.feed()
+            except Exception:
+                pass
+
+
+def version_string():
+    # Local import avoids making version part of the cloud module's startup
+    # dependency chain on older release bundles.
+    try:
+        from .. import version
+        return version.FIRMWARE_VERSION
+    except Exception:
+        return "unknown"
+
+
 def cloud_send(payload_dict):
     if not state.cloud_enabled:
         return False
@@ -209,7 +430,7 @@ def cloud_send(payload_dict):
     if not wifi_mod.ensure_sta_connected():
         return False
 
-    device_id = (state.settings.get("device_id") or "").strip()
+    device_id = (state.cloud_device_id or state.settings.get("device_id") or "").strip()
     if not device_id:
         runtime.show_status("Cloud: no device_id")
         return False
@@ -352,7 +573,7 @@ def cloud_send(payload_dict):
         return False
     finally:
         try:
-            if r:
+            if r is not None:
                 r.close()
         except Exception:
             pass

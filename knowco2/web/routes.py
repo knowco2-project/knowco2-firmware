@@ -13,13 +13,22 @@
 
 import time
 import gc
+import json
 
 from .. import state, config, version, runtime
 from .. import crypto
 from .. import settings as settings_mod
 from ..net import wifi as wifi_mod
-from ..helpers import log, as_int, clamp_int
+from ..helpers import log, as_int, clamp_int, rand_token
 from . import portal_page
+from .api_v1_contract import (
+    API_SCHEMA_VERSION,
+    info_payload,
+    normalize_claim_request,
+    normalize_settings_patch,
+    settings_payload,
+    wifi_write_payload,
+)
 from .http_util import (
     send_all, build_response, make_json_response, make_html_response,
     parse_query, url_decode, read_request_head, read_request_body,
@@ -39,6 +48,96 @@ except Exception:
     microcontroller = None
 
 SETTINGS_FILE = config.SETTINGS_FILE
+
+
+def _send_json(conn, payload, status=200):
+    header, body = make_json_response(payload, status=status, cors=False)
+    send_all(conn, header)
+    send_all(conn, body)
+
+
+def _header_value(request_raw, name):
+    """Return one request header without retaining or logging the body."""
+    wanted = name.lower().encode("ascii") + b":"
+    headers = request_raw.split(b"\r\n\r\n", 1)[0].replace(b"\r\n", b"\n")
+    for line in headers.split(b"\n")[1:]:
+        if line.lower().startswith(wanted):
+            try:
+                return line.split(b":", 1)[1].strip().decode("ascii", "ignore")
+            except Exception:
+                return ""
+    return ""
+
+
+def _request_content_length(request_raw):
+    try:
+        return int(_header_value(request_raw, "content-length") or 0)
+    except Exception:
+        return -1
+
+
+def _api_error(conn, status, code, message):
+    _send_json(conn, {
+        "schema_version": API_SCHEMA_VERSION,
+        "ok": False,
+        "error": {"code": code, "message": message},
+    }, status=status)
+
+
+def _device_serial():
+    for key in ("serial", "serial_number", "device_serial"):
+        value = str(state.settings.get(key) or "").strip()
+        if value:
+            return value[:64]
+    value = str(state.settings.get("device_id") or "").strip()
+    if value.upper().startswith("KC2-"):
+        return value[:64]
+    return None
+
+
+def _wifi_is_configured():
+    return any(
+        (state.settings.get("sta_ssid" + suffix) or "").strip()
+        and (state.settings.get("sta_password" + suffix) or "").strip()
+        for suffix in ("", "_2", "_3")
+    )
+
+
+def _activation_state():
+    if state.pending_cloud_claim:
+        return "pending"
+    if state.cloud_device_token:
+        return "configured"
+    return state.cloud_activation_state or "unconfigured"
+
+
+def _api_write_authorized(payload):
+    """AP possession authorizes setup; STA writes require admin password.
+
+    The admin password is removed before validation and is never reflected.
+    Fresh devices expose their random WPA-protected AP specifically for local
+    onboarding. Once on a shared LAN, an explicit configured admin credential
+    is required, preventing unauthenticated drive-by writes.
+    """
+    provided = payload.pop("admin_password", "") if isinstance(payload, dict) else ""
+    if state.wifi_mode == config.WIFI_MODE_AP:
+        return True
+    return check_admin_password(provided) and ota_unlock_active()
+
+
+def _save_or_restore(changes):
+    """Apply a small settings mutation atomically from the caller's view."""
+    old = {}
+    for key, value in changes.items():
+        old[key] = state.settings.get(key)
+        state.settings[key] = value
+    if settings_mod.save_settings():
+        settings_mod.apply_settings()
+        return True
+    for key, value in old.items():
+        state.settings[key] = value
+    settings_mod.apply_settings()
+    return False
 
 
 # ── Auth helpers ─────────────────────────────────────────────────────
@@ -115,6 +214,274 @@ def handle_data_route(conn):
     send_all(conn, body)
 
 
+# ----------------------------------------------------------------------
+# Versioned local setup API (browser, iOS, Android, desktop)
+# ----------------------------------------------------------------------
+def handle_api_info_route(conn):
+    mdns_name = None
+    if state.wifi_mode == config.WIFI_MODE_STA and state.mdns_hostname:
+        mdns_name = state.mdns_hostname + ".local"
+    payload = info_payload(
+        device_id=state.settings.get("device_id"),
+        cloud_device_id=state.cloud_device_id or None,
+        serial=_device_serial(),
+        board_id=state.board_id_str,
+        firmware_version=version.FIRMWARE_VERSION,
+        cp_version=version.CP_VERSION,
+        wifi_mode=state.wifi_mode,
+        wifi_configured=_wifi_is_configured(),
+        mdns=mdns_name,
+        cloud_configured=bool(state.cloud_device_token),
+        cloud_enabled=state.cloud_enabled,
+        activation_state=_activation_state(),
+    )
+    _send_json(conn, payload)
+
+
+def handle_api_settings_route(conn, method, payload):
+    if method in (b"GET", b"HEAD"):
+        _send_json(conn, settings_payload(
+            state.settings,
+            state.settings.get("_settings_version", 0),
+        ))
+        return
+    if method != b"PATCH":
+        _api_error(conn, 405, "method_not_allowed", "Use GET or PATCH")
+        return
+    if not _api_write_authorized(payload):
+        _api_error(conn, 403, "physical_setup_required", "Use setup AP mode or unlock the device")
+        return
+    try:
+        patch = normalize_settings_patch(payload)
+    except (ValueError, TypeError) as exc:
+        _api_error(conn, 422, "invalid_settings", str(exc))
+        return
+    low = int(patch.get("low_threshold", state.LOW_THRESHOLD))
+    med = int(patch.get("med_threshold", state.MED_THRESHOLD))
+    alert = int(patch.get("alert_threshold", state.ALERT_THRESHOLD))
+    if not (low < med < alert):
+        _api_error(
+            conn, 422, "invalid_settings",
+            "Thresholds must remain ordered low < medium < alert",
+        )
+        return
+    next_version = int(state.settings.get("_settings_version", 0) or 0) + 1
+    patch["_settings_version"] = next_version
+    if not _save_or_restore(patch):
+        _api_error(conn, 503, "storage_unavailable", "Settings could not be saved")
+        return
+    runtime.update_visibility()
+    runtime.refresh_text()
+    _send_json(conn, settings_payload(state.settings, next_version))
+
+
+def _schedule_sta_connect(requested):
+    if not requested:
+        return False
+    state._sta_fallback = True
+    state._sta_auto_retry_count = 0
+    state.last_sta_auto_retry = 0.0
+    state.onboarding_connect_after = (
+        time.monotonic() + config.ONBOARDING_CONNECT_DELAY_S
+    )
+    return True
+
+
+def _requested_connect(payload, default=True):
+    value = payload.get("connect", default)
+    if isinstance(value, bool):
+        return value
+    if value in (0, 1):
+        return bool(value)
+    raise ValueError("connect must be a boolean")
+
+
+def _validate_wifi_api(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("request must be an object")
+    allowed = ("ssid", "password", "connect")
+    for key in payload:
+        if key not in allowed:
+            raise ValueError("unsupported Wi-Fi field: %s" % key)
+    return wifi_write_payload(payload.get("ssid"), payload.get("password"))
+
+
+def handle_api_wifi_route(conn, method, payload):
+    if method != b"POST":
+        _api_error(conn, 405, "method_not_allowed", "Use POST")
+        return
+    if not _api_write_authorized(payload):
+        _api_error(conn, 403, "physical_setup_required", "Use setup AP mode or unlock the device")
+        return
+    try:
+        wifi_values = _validate_wifi_api(payload)
+        connect = _requested_connect(payload)
+    except (ValueError, TypeError) as exc:
+        _api_error(conn, 422, "invalid_wifi", str(exc))
+        return
+    if not _save_or_restore({
+        "sta_ssid": wifi_values["ssid"],
+        "sta_password": wifi_values["password"],
+    }):
+        _api_error(conn, 503, "storage_unavailable", "Wi-Fi credentials could not be saved")
+        return
+    scheduled = _schedule_sta_connect(connect)
+    _send_json(conn, {
+        "schema_version": API_SCHEMA_VERSION,
+        "ok": True,
+        "wifi": {"configured": True},
+        "connection_scheduled": scheduled,
+    }, status=202 if scheduled else 200)
+
+
+def _validate_cloud_claim_api(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("request must be an object")
+    allowed = ("claim_code", "activation_token", "connect")
+    for key in payload:
+        if key not in allowed:
+            raise ValueError("unsupported cloud claim field: %s" % key)
+    return normalize_claim_request(payload)
+
+
+def handle_api_cloud_claim_route(conn, method, payload):
+    if method != b"POST":
+        _api_error(conn, 405, "method_not_allowed", "Use POST")
+        return
+    if not _api_write_authorized(payload):
+        _api_error(conn, 403, "physical_setup_required", "Use setup AP mode or unlock the device")
+        return
+    if state.cloud_device_token:
+        _api_error(conn, 409, "already_paired", "Forget local cloud credentials before pairing again")
+        return
+    try:
+        claim = _validate_cloud_claim_api(payload)
+        connect = _requested_connect(payload)
+    except (ValueError, TypeError) as exc:
+        _api_error(conn, 422, "invalid_claim", str(exc))
+        return
+    state.pending_cloud_claim = claim
+    state.cloud_activation_request_id = rand_token(32)
+    state.cloud_activation_state = "pending"
+    state.cloud_activation_error = ""
+    state.cloud_activation_failures = 0
+    state.cloud_activation_next_attempt = 0.0
+    scheduled = _schedule_sta_connect(connect)
+    _send_json(conn, {
+        "schema_version": API_SCHEMA_VERSION,
+        "ok": True,
+        "cloud": {"activation_state": "pending"},
+        "connection_scheduled": scheduled,
+    }, status=202)
+
+
+def handle_api_onboarding_route(conn, method, payload):
+    """Atomically queue Wi-Fi plus optional cloud activation for the wizard."""
+    if method != b"POST":
+        _api_error(conn, 405, "method_not_allowed", "Use POST")
+        return
+    if not _api_write_authorized(payload):
+        _api_error(conn, 403, "physical_setup_required", "Use setup AP mode or unlock the device")
+        return
+    if not isinstance(payload, dict):
+        _api_error(conn, 422, "invalid_onboarding", "Request must be an object")
+        return
+    for key in payload:
+        if key not in ("wifi", "cloud", "connect"):
+            _api_error(conn, 422, "invalid_onboarding", "Unsupported onboarding field")
+            return
+    try:
+        wifi_values = _validate_wifi_api(dict(payload.get("wifi") or {}))
+        cloud_input = payload.get("cloud")
+        claim = normalize_claim_request(cloud_input) if cloud_input else None
+        connect = _requested_connect(payload)
+    except (ValueError, TypeError) as exc:
+        _api_error(conn, 422, "invalid_onboarding", str(exc))
+        return
+    if claim and state.cloud_device_token:
+        _api_error(conn, 409, "already_paired", "Forget local cloud credentials before pairing again")
+        return
+    changes = {
+        "sta_ssid": wifi_values["ssid"],
+        "sta_password": wifi_values["password"],
+    }
+    if not _save_or_restore(changes):
+        _api_error(conn, 503, "storage_unavailable", "Onboarding settings could not be saved")
+        return
+    if claim:
+        state.pending_cloud_claim = claim
+        state.cloud_activation_request_id = rand_token(32)
+        state.cloud_activation_state = "pending"
+        state.cloud_activation_error = ""
+        state.cloud_activation_failures = 0
+        state.cloud_activation_next_attempt = 0.0
+    scheduled = _schedule_sta_connect(connect)
+    _send_json(conn, {
+        "schema_version": API_SCHEMA_VERSION,
+        "ok": True,
+        "wifi": {"configured": True},
+        "cloud": {"activation_state": "pending" if claim else _activation_state()},
+        "connection_scheduled": scheduled,
+    }, status=202 if scheduled else 200)
+
+
+def handle_api_cloud_clear_route(conn, method, payload, forget=False):
+    if method != b"POST":
+        _api_error(conn, 405, "method_not_allowed", "Use POST")
+        return
+    if not _api_write_authorized(payload):
+        _api_error(conn, 403, "physical_setup_required", "Use setup AP mode or unlock the device")
+        return
+    changes = {}
+    if forget:
+        changes["cloud_device_id"] = ""
+        changes["cloud_device_token"] = ""
+        changes["cloud_enabled"] = False
+    if changes and not _save_or_restore(changes):
+        _api_error(conn, 503, "storage_unavailable", "Cloud pairing state could not be cleared")
+        return
+    state.pending_cloud_claim = None
+    state.cloud_activation_request_id = None
+    state.cloud_activation_state = "unconfigured" if forget else (
+        "configured" if state.cloud_device_token else "unconfigured"
+    )
+    state.cloud_activation_error = ""
+    state.cloud_activation_failures = 0
+    state.cloud_activation_next_attempt = 0.0
+    _send_json(conn, {
+        "schema_version": API_SCHEMA_VERSION,
+        "ok": True,
+        "cloud": {"activation_state": _activation_state()},
+    })
+
+
+def handle_api_cloud_enabled_route(conn, method, payload):
+    if method != b"POST":
+        _api_error(conn, 405, "method_not_allowed", "Use POST")
+        return
+    if not _api_write_authorized(payload):
+        _api_error(conn, 403, "physical_setup_required", "Use setup AP mode or unlock the device")
+        return
+    if tuple(payload.keys()) != ("enabled",):
+        _api_error(conn, 422, "invalid_request", "Provide only enabled")
+        return
+    value = payload.get("enabled")
+    if not isinstance(value, bool):
+        _api_error(conn, 422, "invalid_request", "enabled must be a boolean")
+        return
+    if value and not state.cloud_device_token:
+        _api_error(conn, 409, "not_paired", "Complete cloud pairing before enabling uploads")
+        return
+    if not _save_or_restore({"cloud_enabled": value}):
+        _api_error(conn, 503, "storage_unavailable", "Cloud setting could not be saved")
+        return
+    _send_json(conn, {
+        "schema_version": API_SCHEMA_VERSION,
+        "ok": True,
+        "cloud": {"enabled": state.cloud_enabled},
+    })
+
+
 def handle_export_csv_route(conn):
     """Return the in-RAM CO2 history as a downloadable CSV file."""
     try:
@@ -177,10 +544,7 @@ def handle_status_route(conn):
         "alert_threshold": state.ALERT_THRESHOLD,
         "history_points": len(state.co2_history),
 
-        "hwid": state.hwid_hex,
         "board_id": state.board_id_str,
-        "scd_serial": state.scd_serial_str,
-        "pair_code": state.pair_code,
         "firmware_version": version.FIRMWARE_VERSION,
         "cp_version": version.CP_VERSION,
 
@@ -196,6 +560,8 @@ def handle_status_route(conn):
         "mdns": (state.mdns_hostname + ".local") if (state.wifi_mode == config.WIFI_MODE_STA and state.mdns_hostname) else None,
 
         "cloud_enabled": state.cloud_enabled,
+        "cloud_device_id": state.cloud_device_id or None,
+        "cloud_activation_state": _activation_state(),
         "cloud_interval_sec": state.cloud_interval_sec,
         "cloud_configured": bool(state.cloud_api_url) and bool(state.cloud_device_token),
         "cloud_last_attempt_ts": state.cloud_last_attempt_ts,
@@ -266,7 +632,7 @@ def handle_status_route(conn):
 # ----------------------------------------------------------------------
 # Calibration page + route
 # ----------------------------------------------------------------------
-def render_calibration_page(authed_pw=""):
+def render_calibration_page():
     s = state.settings
     asc_enabled = bool(s.get("asc_enabled", True))
     asc_checked = "checked" if asc_enabled else ""
@@ -293,11 +659,12 @@ def render_calibration_page(authed_pw=""):
     ALTITUDE_MAX = config.ALTITUDE_MAX
     PRESSURE_MAX = config.PRESSURE_MAX
 
-    if authed_pw:
-        _esc_pw = authed_pw.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-        calibration_pw_field = "<input type=\"hidden\" name=\"pw\" value=\"" + _esc_pw + "\">\n"
-    else:
-        calibration_pw_field = ""
+    calibration_pw_field = ""
+    if s.get("admin_password", ""):
+        calibration_pw_field = (
+            "<label>Confirm settings password<br>"
+            "<input type='password' name='pw' autocomplete='current-password' value=''></label>"
+        )
     html = """<!DOCTYPE html>
 <html>
 <head>
@@ -320,7 +687,7 @@ def render_calibration_page(authed_pw=""):
 <body>
   <div class='wrap'>
     <h1>Calibration</h1>
-    <form method='GET' action='/calibration'>
+    <form method='POST' action='/calibration'>
       """ + calibration_pw_field + """<fieldset style='border:1px solid #333; border-radius:8px; padding:10px;'>
         <legend style='font-size:12px; color:#aaa;'>Calibration Settings</legend>
         <label>Altitude (m)
@@ -351,7 +718,7 @@ def render_calibration_page(authed_pw=""):
     return html
 
 
-def handle_calibration_route(conn, params):
+def handle_calibration_route(conn, params, method=b"GET"):
     """Apply altitude/pressure/ASC/forced-calibration changes (via the sensor
     driver) and render the calibration page. Write ops are admin-password
     protected when one is configured; the read view is always available."""
@@ -360,31 +727,16 @@ def handle_calibration_route(conn, params):
     scd_available = (sensor is not None)
 
     _WRITE_PARAMS = {"reset", "calibrate", "altitude", "pressure", "asc", "update"}
-    _has_write_op = params and any(k in params for k in _WRITE_PARAMS)
-    _admin_pw = s.get("admin_password", "")
-    if _has_write_op and _admin_pw:
-        _provided = params.get("pw", "")
-        if not crypto.constant_time_equals(_provided or "", _admin_pw):
-            _login_html = """<!DOCTYPE html>
-<html><head><meta charset='utf-8'><title>Calibration - Login</title>
-<meta name='viewport' content='width=device-width, initial-scale=1'>
-<style>body{font-family:sans-serif;background:#0b0b0b;color:#eee;margin:0}
-.wrap{max-width:480px;margin:0 auto;padding:16px;text-align:center}
-input{padding:6px;border-radius:4px;border:1px solid #444;background:#111;color:#eee;font-size:14px;width:80%;max-width:260px}
-button{margin-top:16px;padding:8px 16px;border-radius:4px;border:1px solid #00bcd4;background:#00bcd4;color:#000;font-weight:600;cursor:pointer}
-</style></head><body><div class='wrap'>
-<h1>Know CO&#8322; Calibration</h1><p>Enter settings password to apply changes:</p>
-<form method='GET' action='/calibration'>
-<label>Password<br><input type='password' name='pw'></label><br>
-<button type='submit'>Unlock</button></form>
-<p><a href='/' style='color:#00bcd4;'>Back to settings</a></p>
-</div></body></html>"""
-            _header, _body = make_html_response(_login_html)
-            send_all(conn, _header)
-            send_all(conn, _body)
+    _has_write_op = method == b"POST" and params and any(k in params for k in _WRITE_PARAMS)
+    if _has_write_op and state.wifi_mode != config.WIFI_MODE_AP:
+        if not (check_admin_password(params.get("pw", "")) and ota_unlock_active()):
+            _api_error(
+                conn, 403, "physical_setup_required",
+                "Switch to setup AP, or provide the admin password after physically unlocking the device",
+            )
             return
 
-    if params:
+    if _has_write_op:
         if "reset" in params:
             s["asc_enabled"] = True
             s["altitude"] = 0
@@ -434,7 +786,7 @@ button{margin-top:16px;padding:8px 16px;border-radius:4px;border:1px solid #00bc
                 runtime.show_status("Sensor unavailable")
             settings_mod.save_settings()
             runtime.show_status("Calibration settings updated")
-    html = render_calibration_page(authed_pw=params.get("pw", "") if params else "")
+    html = render_calibration_page()
     header, body = make_html_response(html)
     send_all(conn, header)
     send_all(conn, body)
@@ -1397,7 +1749,7 @@ h2{color:%s}</style></head><body>
     send_all(conn, body)
 
 
-def handle_root_route(conn, params):
+def handle_root_route(conn, params, method=b"GET"):
     """Settings page (and POST handler). Admin-password gated when configured."""
     s = state.settings
     try:
@@ -1446,7 +1798,17 @@ def handle_root_route(conn, params):
         for k, v in params.items():
             if k != "pw":
                 settings_params[k] = v
-    if settings_params and len(settings_params) > 0:
+    if settings_params and len(settings_params) > 0 and method == b"POST":
+        # Legacy form writes follow the same security boundary as Local API
+        # v1. AP possession is the setup proof. On a shared STA network both
+        # the configured admin password and live physical unlock are required.
+        if state.wifi_mode != config.WIFI_MODE_AP:
+            if not (check_admin_password(params.get("pw", "")) and ota_unlock_active()):
+                _api_error(
+                    conn, 403, "physical_setup_required",
+                    "Switch to setup AP, or provide the admin password after physically unlocking the device",
+                )
+                return
         if "cloud_enabled" not in settings_params and s.get("cloud_enabled", False):
             settings_params["cloud_enabled"] = "on"
         if "alerts" not in settings_params and s.get("alerts_enabled", False):
@@ -1558,8 +1920,7 @@ def handle_http_client():
             except Exception: pass
             return
 
-        first_line = data.split(b"\r\n", 1)[0]
-        log("req", "HTTP", addr, first_line, min_interval=0.2)
+        first_line = data.replace(b"\r\n", b"\n").split(b"\n", 1)[0]
 
         parts = first_line.split()
         method = b"GET"
@@ -1579,6 +1940,11 @@ def handle_http_client():
             except Exception:
                 path = "/"
 
+        # Never log query strings or request bodies: legacy URLs can contain
+        # admin passwords and onboarding credentials are bearer secrets.
+        log_path = path.split("?", 1)[0]
+        log("req", "HTTP", addr, method, log_path, min_interval=0.2)
+
         if path in CAPTIVE_PATHS_204:
             if state.wifi_mode == config.WIFI_MODE_AP:
                 header = (b"HTTP/1.1 302 Found\r\n"
@@ -1595,7 +1961,7 @@ def handle_http_client():
             send_all(conn, header)
             return
 
-        if method not in (b"GET", b"HEAD", b"POST"):
+        if method not in (b"GET", b"HEAD", b"POST", b"PATCH"):
             header, body = build_response(405, "text/plain; charset=utf-8", b"Method Not Allowed")
             send_all(conn, header)
             send_all(conn, body)
@@ -1604,9 +1970,33 @@ def handle_http_client():
         route, params = parse_query(path)
 
         _is_ota_upload = (route == "/update" and "upload" in params)
-        if method == b"POST" and not _is_ota_upload:
-            post_body = read_request_body(conn, data)
-            if post_body:
+        is_api = route == "/api/v1" or route.startswith("/api/v1/")
+        api_payload = {}
+        if method in (b"POST", b"PATCH") and not _is_ota_upload:
+            content_length = _request_content_length(data)
+            if content_length < 0 and is_api:
+                _api_error(conn, 400, "invalid_content_length", "Content-Length is invalid")
+                return
+            if is_api and content_length > 4096:
+                _api_error(conn, 413, "payload_too_large", "API request exceeds 4096 bytes")
+                return
+            post_body = read_request_body(
+                conn, data, max_bytes=4096 if is_api else 8192
+            )
+            if is_api:
+                content_type = _header_value(data, "content-type").lower()
+                if "application/json" not in content_type:
+                    _api_error(conn, 400, "json_required", "Content-Type must be application/json")
+                    return
+                try:
+                    api_payload = json.loads(post_body.decode("utf-8"))
+                except Exception:
+                    _api_error(conn, 400, "invalid_json", "Request body must be valid JSON")
+                    return
+                if not isinstance(api_payload, dict):
+                    _api_error(conn, 422, "invalid_request", "Request body must be an object")
+                    return
+            elif post_body:
                 try:
                     post_body_str = post_body.decode("utf-8", "ignore")
                     for pair in post_body_str.split("&"):
@@ -1620,6 +2010,32 @@ def handle_http_client():
                 except Exception:
                     pass
 
+        if is_api:
+            if route == "/api/v1/info":
+                if method not in (b"GET", b"HEAD"):
+                    _api_error(conn, 405, "method_not_allowed", "Use GET")
+                else:
+                    handle_api_info_route(conn)
+            elif route == "/api/v1/settings":
+                handle_api_settings_route(conn, method, api_payload)
+            elif route == "/api/v1/wifi":
+                handle_api_wifi_route(conn, method, api_payload)
+            elif route == "/api/v1/cloud/claim":
+                handle_api_cloud_claim_route(conn, method, api_payload)
+            elif route == "/api/v1/cloud/claim/clear":
+                handle_api_cloud_clear_route(conn, method, api_payload)
+            elif route == "/api/v1/cloud/credentials/forget":
+                # Local-only forgetting. Ownership remains in the account and
+                # must be released/revoked through the authenticated cloud API.
+                handle_api_cloud_clear_route(conn, method, api_payload, forget=True)
+            elif route == "/api/v1/cloud/enabled":
+                handle_api_cloud_enabled_route(conn, method, api_payload)
+            elif route == "/api/v1/onboarding":
+                handle_api_onboarding_route(conn, method, api_payload)
+            else:
+                _api_error(conn, 404, "not_found", "Unknown local API route")
+            return
+
         if route == "/data":
             handle_data_route(conn)
         elif route == "/status":
@@ -1627,11 +2043,11 @@ def handle_http_client():
         elif route == "/export.csv":
             handle_export_csv_route(conn)
         elif route == "/calibration":
-            handle_calibration_route(conn, params)
+            handle_calibration_route(conn, params, method=method)
         elif route == "/update":
             handle_update_route(conn, params, method=method, raw_headers=data)
         else:
-            handle_root_route(conn, params)
+            handle_root_route(conn, params, method=method)
 
     except Exception as e:
         log("http_err", "HTTP error:", e, min_interval=1.0)

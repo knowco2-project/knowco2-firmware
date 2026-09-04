@@ -41,6 +41,38 @@ The device needs CircuitPython **10.x** installed before the firmware can run:
 3. Drag the `.uf2` onto the drive — the board reboots and `CIRCUITPY` appears.
 4. Then follow **Option 1** above to install the firmware.
 
+## Fast onboarding
+
+Connect to the WPA-protected `knowco2-…` setup network and open
+`http://192.168.4.1`. The Fast device setup card saves Wi-Fi and can also
+accept the 8-character, one-time code created in the signed-in cloud portal.
+The app path sends a high-entropy activation token to the same local API.
+
+The browser/app never receives the permanent device secret. The device leaves
+AP mode only after returning a complete response, redeems the temporary claim
+at the fixed `https://api.knowco2.com/v1/devices/activate` endpoint, stores the
+returned `cloud_device_id` and secret, then continues to use the existing
+HMAC-authenticated `/v1/ingest` protocol. A failed Wi-Fi connection restores
+the setup AP. A power loss before activation clears the RAM-only claim, so the
+user must create a new one-time code.
+
+Local API v1 routes are JSON and intentionally do not enable wildcard CORS on
+writes:
+
+| Route | Purpose |
+|---|---|
+| `GET /api/v1/info` | Secret-free identity, capability, Wi-Fi, and cloud state |
+| `GET/PATCH /api/v1/settings` | Public settings only; credentials are excluded |
+| `POST /api/v1/wifi` | Write-only WPA/WPA2 credentials |
+| `POST /api/v1/cloud/claim` | Write-only one-time cloud credential |
+| `POST /api/v1/onboarding` | Atomic browser/app Wi-Fi plus optional cloud setup |
+| `POST /api/v1/cloud/enabled` | Explicitly enable or disable uploads |
+| `POST /api/v1/cloud/credentials/forget` | Forget local credentials only; does not release cloud ownership |
+
+Provisioning writes are allowed on the physical setup AP. On a shared STA
+network they require both the configured admin password and the temporary
+physical-unlock window.
+
 ---
 
 ## Repository Layout

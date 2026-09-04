@@ -46,6 +46,7 @@ DEFAULT_SETTINGS = {
     # Cloud telemetry
     "cloud_enabled": False,
     "cloud_api_url": "",
+    "cloud_device_id": "",
     "cloud_device_token": "",
     "cloud_interval_sec": 60,
 
@@ -127,8 +128,15 @@ def apply_settings():
 
     state.cloud_enabled = bool(s.get("cloud_enabled", False))
     state.cloud_api_url = (s.get("cloud_api_url", "") or "").strip()
+    state.cloud_device_id = (s.get("cloud_device_id", "") or "").strip()
     state.cloud_device_token = (s.get("cloud_device_token", "") or "").strip()
     state.cloud_interval_sec = clamp_int(s.get("cloud_interval_sec", 60) or 60, 15, 3600, 60)
+    if state.pending_cloud_claim:
+        state.cloud_activation_state = "pending"
+    elif state.cloud_device_token:
+        state.cloud_activation_state = "configured"
+    elif state.cloud_activation_state not in ("error",):
+        state.cloud_activation_state = "unconfigured"
 
     # Apply display orientation immediately (no reboot needed).
     try:

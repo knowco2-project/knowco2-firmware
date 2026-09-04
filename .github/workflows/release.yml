@@ -24,6 +24,11 @@ jobs:
         with:
           fetch-depth: 0   # full history + tags for the version-bump guard
 
+      - name: Verify release licensing files
+        run: |
+          test -s LICENSE
+          test -s THIRD_PARTY_NOTICES.md
+
       # ------------------------------------------------------------------ #
       # Determine the release version
       # ------------------------------------------------------------------ #
@@ -100,6 +105,9 @@ jobs:
           cp code.py boot.py "$STAGING/"
           cp -r knowco2 "$STAGING/"
           cp -r assets "$STAGING/"
+          mkdir -p "$STAGING/assets/legal"
+          cp LICENSE "$STAGING/assets/legal/LICENSE.txt"
+          cp THIRD_PARTY_NOTICES.md "$STAGING/assets/legal/THIRD_PARTY_NOTICES.md"
 
           cd "$STAGING"
           zip -r "../knowco2-ota-${VERSION}.zip" .
@@ -124,6 +132,9 @@ jobs:
           cp code.py boot.py "$STAGING/"
           cp -r knowco2 "$STAGING/"
           cp -r assets "$STAGING/"
+          mkdir -p "$STAGING/assets/legal"
+          cp LICENSE "$STAGING/assets/legal/LICENSE.txt"
+          cp THIRD_PARTY_NOTICES.md "$STAGING/assets/legal/THIRD_PARTY_NOTICES.md"
 
           # Use the versioned lib snapshot if present, otherwise fall back to lib/
           LIB_DIR=$(ls -d lib-*-release 2>/dev/null | sort -r | head -1)
@@ -186,6 +197,9 @@ jobs:
           cp code.py boot.py "$STAGING/"
           cp -r knowco2 "$STAGING/"
           cp -r assets "$STAGING/"
+          mkdir -p "$STAGING/assets/legal"
+          cp LICENSE "$STAGING/assets/legal/LICENSE.txt"
+          cp THIRD_PARTY_NOTICES.md "$STAGING/assets/legal/THIRD_PARTY_NOTICES.md"
 
           # Compile the package to bytecode, then drop the .py source.
           # version.py is exempted: the KnowCO2 Flasher (and our own
@@ -254,6 +268,22 @@ jobs:
           unzip -l "knowco2-source-${VERSION}.zip"
 
       # ------------------------------------------------------------------ #
+      # Gate: every distributed archive must carry the applicable KnowCO2
+      # and third-party license notices. Device-install archives place them
+      # under assets/legal so both USB and OTA installs retain the notices.
+      # ------------------------------------------------------------------ #
+      - name: Verify license notices in release ZIPs
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          for package in ota dev full; do
+            archive="knowco2-${package}-${VERSION}.zip"
+            unzip -Z1 "$archive" | grep -Fxq "assets/legal/LICENSE.txt"
+            unzip -Z1 "$archive" | grep -Fxq "assets/legal/THIRD_PARTY_NOTICES.md"
+          done
+          unzip -Z1 "knowco2-source-${VERSION}.zip" | grep -Fxq "LICENSE"
+          unzip -Z1 "knowco2-source-${VERSION}.zip" | grep -Fxq "THIRD_PARTY_NOTICES.md"
+
+      # ------------------------------------------------------------------ #
       # Generate SHA-256 checksums for all artifacts
       # ------------------------------------------------------------------ #
       - name: Generate checksums
@@ -310,6 +340,10 @@ jobs:
 
           ## Checksums
           See `*-checksums.txt` attached below to verify your download.
+
+          ## Licensing
+          Every archive includes the KnowCO2 MIT license and notices for bundled
+          third-party libraries.
           NOTES
           )" \
             "knowco2-full-${VERSION}.zip" \

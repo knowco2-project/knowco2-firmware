@@ -122,7 +122,6 @@ cached_pct = None
 # ── Identity ────────────────────────────────────────────────────────
 hwid_hex = None
 board_id_str = None
-pair_code = None
 
 # ── Networking: Wi-Fi / HTTP / mDNS ─────────────────────────────────
 wifi_mode = config.WIFI_MODE_AP
@@ -161,6 +160,7 @@ last_ntp_attempt = 0.0
 # ── Cloud upload ────────────────────────────────────────────────────
 cloud_enabled = False
 cloud_api_url = ""
+cloud_device_id = ""
 cloud_device_token = ""
 cloud_interval_sec = 60
 last_cloud_send = 0.0
@@ -169,6 +169,16 @@ cloud_last_ok = 0.0
 cloud_last_http = None
 cloud_last_error = ""
 cloud_last_attempt_ts = 0
+
+# Fast onboarding. The temporary credential is RAM-only and is lost safely on
+# power loss. The remaining fields contain only status/timing.
+pending_cloud_claim = None
+cloud_activation_request_id = None
+cloud_activation_state = "unconfigured"
+cloud_activation_error = ""
+cloud_activation_failures = 0
+cloud_activation_next_attempt = 0.0
+onboarding_connect_after = 0.0
 
 # Reusable TLS context + requests Session (kept alive to avoid socket leaks).
 # Invalidated by Wi-Fi mode switches so a fresh one is built per network.

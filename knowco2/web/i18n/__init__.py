@@ -3,7 +3,7 @@
 # Internationalisation helpers for the settings portal.
 #
 # LANG_NAMES  – ordered dict of language code → display name shown in
-#               the selector.  Add a new entry here + a matching entry
+#               the selector. Add a new entry here + a matching entry
 #               in translations.py's TRANSLATIONS dict to support an
 #               additional language.
 #
