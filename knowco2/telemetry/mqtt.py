@@ -119,8 +119,8 @@ def publish_mqtt_discovery():
     device = {
         "identifiers": ["knowco2_%s" % uid],
         "name": "KnowCO2",
-        "manufacturer": "KNOWCO2 LLC",
-        "model": "KnowCO2 Model A",
+        "manufacturer": "KnowCO2 LLC",
+        "model": "KC2-01",
         "sw_version": version.FIRMWARE_VERSION,
     }
     sensors = [

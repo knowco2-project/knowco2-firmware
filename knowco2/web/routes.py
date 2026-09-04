@@ -492,7 +492,7 @@ def _zip_ensure_dir(path):
 
 
 def _fs_free_bytes():
-    """Free bytes on the CIRCUITPY filesystem, or None if unknown."""
+    """Free bytes on the device filesystem, or None if unknown."""
     try:
         import os as _s_os
         st = _s_os.statvfs("/")
@@ -844,7 +844,7 @@ def _process_zip_update(conn, zip_path):
     # RC-48v4 SPACE-AWARE MODE SELECTION
     # ------------------------------------------------------------------
     # Full staging needs the whole uncompressed tree on flash next to the
-    # live one. Small CIRCUITPY partitions (plus a resident zip) can't
+    # live one. Small device filesystems (plus a resident zip) can't
     # always afford that, so when space is short we fall back to per-file
     # mode: extract ONE file to a temp, CRC-verify it, rename it into
     # place, repeat. Interruption can leave a mix of old/new files but
@@ -1266,7 +1266,7 @@ will accept updates for 5&nbsp;minutes. Then reload this page.</div>
              .replace("<", "\\x3c").replace(">", "\\x3e"))
     pw_field = ("<input type='hidden' name='pw' value='%s'>" % pw_attr) if _pw_raw else ""
     form_html = """<!DOCTYPE html>
-<html><head><meta charset='utf-8'><title>Know CO2 - OTA Update</title>
+<html><head><meta charset='utf-8'><title>KnowCO2 - OTA Update</title>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0b0b0b;color:#eee;margin:0}
@@ -1411,7 +1411,7 @@ def handle_root_route(conn, params):
 <html>
 <head>
   <meta charset='utf-8'>
-  <title>Know CO2 Settings Login</title>
+  <title>KnowCO2 Settings Login</title>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#0b0b0b; color:#eee; margin:0; }

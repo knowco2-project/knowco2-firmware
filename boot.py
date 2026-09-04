@@ -10,14 +10,15 @@ import usb_midi
 # boot.py
 #
 # Default behavior:
-#   - Hide the USB mass-storage drive so the board does not show as CIRCUITPY
+#   - Name the service volume KNOWCO2
+#   - Hide the USB mass-storage drive during normal customer operation
 #   - Keep the filesystem available for normal CircuitPython file writes
 #   - Disable USB HID (keyboard/mouse) and MIDI. Neither is used by the
 #     firmware, and an enumerated HID keyboard makes iOS hide its on-screen
 #     keyboard whenever the device is plugged in for power.
 #
 # Override:
-#   - Hold D1 at power-up / reset to keep the USB drive visible
+#   - Hold button B at power-up / reset to keep the KNOWCO2 service volume visible
 # -----------------------------------------------------------------------------
 
 # Suppress the CircuitPython REPL terminal on the built-in TFT as early as possible,
@@ -28,7 +29,7 @@ try:
 except Exception:
     pass
 
-# Unconditional: applies whether or not the D1 override is held. USB CDC
+# Unconditional: applies whether or not the button B override is held. USB CDC
 # serial is left enabled so the REPL and print() debugging still work.
 try:
     usb_hid.disable()
@@ -39,26 +40,39 @@ try:
 except Exception:
     pass
 
-OVERRIDE_PIN = board.D1
+SERVICE_VOLUME_LABEL = "KNOWCO2"
+MAINTENANCE_BUTTON_PIN = board.D1  # Physical button B.
 
 override = None
 
 try:
-    override = digitalio.DigitalInOut(OVERRIDE_PIN)
+    override = digitalio.DigitalInOut(MAINTENANCE_BUTTON_PIN)
     override.switch_to_input(pull=digitalio.Pull.DOWN)
 
     # Give the pin a moment to settle after power-up.
     time.sleep(0.05)
 
-    if override.value:
-        # Override held: host (Mac/PC) gets write access by default. Do not remount.
+    maintenance_mode = bool(override.value)
+
+    # CircuitPython creates a fresh filesystem as CIRCUITPY. Once KnowCO2 is
+    # installed, keep the product/service volume name stable across updates.
+    # The label can only be changed while the microcontroller owns the volume.
+    try:
+        storage.remount("/", readonly=False)
+        filesystem = storage.getmount("/")
+        if filesystem.label != SERVICE_VOLUME_LABEL:
+            filesystem.label = SERVICE_VOLUME_LABEL
+    except Exception:
         pass
-    else:
-        # Default behavior: make sure the filesystem is writable, then hide USB storage.
+
+    if maintenance_mode:
+        # Give the host write access to the visible KNOWCO2 service volume.
         try:
-            storage.remount("/", readonly=False)
+            storage.remount("/", readonly=True)
         except Exception:
             pass
+    else:
+        # Normal operation: firmware keeps write access and USB storage is hidden.
         try:
             storage.disable_usb_drive()
         except Exception:

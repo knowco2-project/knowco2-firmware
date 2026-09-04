@@ -11,12 +11,13 @@ espidf, microcontroller). No hardware needed; CI runs them on every PR.
 | `test_snappy_ui.py` | UI responsiveness: single QR generation, matrix cache hits, deferred rebuild flag, pending-press capture, guarded label writes |
 | `test_graph_perf.py` | Pixel-identical equivalence between the native bitmaptools graph path and the pure-Python fallback |
 | `test_buttons.py` | Button taps, holds, combinations, busy-state polling, and wrap-safe timing |
+| `test_product_naming.py` | Production brand/model names, physical A/B/C terminology, and the hidden/maintenance `KNOWCO2` service-volume contract |
 
 Run locally from `tests/`:
 
 ```sh
 docker run --rm -v "$PWD/..:/fw:ro" -w /fw/tests python:3.12-slim-bookworm \
-  sh -c "python test_cloud_heal.py && python test_snappy_ui.py && python test_graph_perf.py && python test_buttons.py && python test_ota_staged.py"
+  sh -c "python test_cloud_heal.py && python test_snappy_ui.py && python test_graph_perf.py && python test_buttons.py && python test_web_onboarding.py && python test_product_naming.py && python test_ota_staged.py"
 ```
 
 Philosophy: every bug that reached hardware becomes a permanent test.
