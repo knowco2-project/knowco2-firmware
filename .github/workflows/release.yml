@@ -28,6 +28,7 @@ jobs:
         run: |
           test -s LICENSE
           test -s THIRD_PARTY_NOTICES.md
+          test -s LICENSES/CIRCUITPYTHON-10.2.1.txt
 
       # ------------------------------------------------------------------ #
       # Determine the release version
@@ -282,6 +283,7 @@ jobs:
           done
           unzip -Z1 "knowco2-source-${VERSION}.zip" | grep -Fxq "LICENSE"
           unzip -Z1 "knowco2-source-${VERSION}.zip" | grep -Fxq "THIRD_PARTY_NOTICES.md"
+          unzip -Z1 "knowco2-source-${VERSION}.zip" | grep -Fxq "LICENSES/CIRCUITPYTHON-10.2.1.txt"
 
       # ------------------------------------------------------------------ #
       # Generate SHA-256 checksums for all artifacts
