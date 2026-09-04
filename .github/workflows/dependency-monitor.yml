@@ -1,0 +1,94 @@
+name: CircuitPython dependency monitor
+
+on:
+  schedule:
+    - cron: "17 13 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: circuitpython-dependency-monitor
+  cancel-in-progress: true
+
+jobs:
+  check-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify current dependency lock
+        run: python3 tools/firmware_dependencies.py verify
+
+      - name: Check official Adafruit bundle release
+        id: bundle
+        run: |
+          python3 tools/firmware_dependencies.py check-upstream \
+            --json-output dependency-update.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Write monitor summary
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          report = json.load(open("dependency-update.json", encoding="utf-8"))
+          print("## CircuitPython bundle dependency check")
+          print()
+          print(f"- Locked bundle: `{report['current_tag']}`")
+          print(f"- Latest official bundle: `{report['latest_tag']}`")
+          print(f"- Upstream release commit: `{report['release_commit']}`")
+          print(f"- Update candidate available: **{report['update_available']}**")
+          print(f"- Source asset SHA-256: `{report['source_asset']['sha256']}`")
+          print(f"- 10.x MPY asset SHA-256: `{report['precompiled_asset']['sha256']}`")
+          print()
+          print("This monitor never changes the production lock automatically.")
+          PY
+
+      - name: Open or refresh dependency review issue
+        if: steps.bundle.outputs.update_available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_TITLE: Review newer Adafruit CircuitPython bundle
+        run: |
+          python3 - <<'PY' > dependency-issue.md
+          import json
+          report = json.load(open("dependency-update.json", encoding="utf-8"))
+          print("A newer official Adafruit CircuitPython bundle is available for review.\n")
+          print(f"- Current locked bundle: `{report['current_tag']}`")
+          print(f"- Candidate bundle: `{report['latest_tag']}`")
+          print(f"- Upstream release commit: `{report['release_commit']}`")
+          print(f"- Source asset: `{report['source_asset']['filename']}`")
+          print(f"- Source SHA-256: `{report['source_asset']['sha256']}`")
+          print(f"- 10.x MPY asset: `{report['precompiled_asset']['filename']}`")
+          print(f"- 10.x MPY SHA-256: `{report['precompiled_asset']['sha256']}`")
+          print(f"- Release: {report['release_url']}\n")
+          print("This is an update candidate only. Do not change the production lock until the vendored library diff, notices, filesystem budget, hardware regression suite, and soak test are complete.\n")
+          print("See `DEPENDENCIES.md` for the qualification process.")
+          PY
+
+          NUMBER=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 100 \
+            --json number,title \
+            --jq '.[] | select(.title == "Review newer Adafruit CircuitPython bundle") | .number' \
+            | head -1)
+
+          if [ -n "$NUMBER" ]; then
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file dependency-issue.md
+          else
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$ISSUE_TITLE" \
+              --body-file dependency-issue.md
+          fi
