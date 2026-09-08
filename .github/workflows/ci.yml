@@ -29,6 +29,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Enforce private CodeBuild runner policy
+        run: python3 tools/check_ci_runner_policy.py
+
       - name: Verify locked CircuitPython dependencies
         run: python3 tools/firmware_dependencies.py verify
 
