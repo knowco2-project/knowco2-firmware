@@ -99,6 +99,29 @@ def snapshot(root="/knowco2"):
                 out[p] = zlib.crc32(fh.read())
     return out
 
+def corrupt_member(archive_path, member_name):
+    """Flip a byte inside a known member's compressed-data region.
+
+    Percentage offsets into a ZIP are not reliable: adding an unrelated file
+    can move the chosen offset into padding or metadata and leave every member
+    valid. ZipInfo.header_offset plus the local-header lengths identifies the
+    actual payload without depending on archive layout.
+    """
+    data = bytearray(open(archive_path, "rb").read())
+    with zipfile.ZipFile(archive_path) as archive:
+        info = archive.getinfo(member_name)
+    header = info.header_offset
+    if data[header:header + 4] != b"PK\x03\x04":
+        raise AssertionError("invalid local ZIP header")
+    name_len = int.from_bytes(data[header + 26:header + 28], "little")
+    extra_len = int.from_bytes(data[header + 28:header + 30], "little")
+    payload_start = header + 30 + name_len + extra_len
+    if info.compress_size < 1:
+        raise AssertionError("selected ZIP member has no payload")
+    position = payload_start + (info.compress_size // 2)
+    data[position] ^= 0xFF
+    return bytes(data)
+
 # ---- T1: happy path ---------------------------------------------------
 clean_root()
 shutil.copy(ZIP, "/tmp_ota.zip")
@@ -122,9 +145,7 @@ good_tree = snapshot()
 
 # ---- T2: corrupted entry → abort, tree untouched ----------------------
 data = open(ZIP, "rb").read()
-# flip bytes ~40% into the archive (inside some entry's compressed data)
-pos = int(len(data) * 0.4)
-bad = data[:pos] + bytes(b ^ 0xFF for b in data[pos:pos+8]) + data[pos+8:]
+bad = corrupt_member(ZIP, "knowco2/helpers.py")
 open("/tmp_ota.zip","wb").write(bad)
 results.clear(); resets["n"] = 0
 routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
@@ -203,9 +224,7 @@ check("T7 live tree untouched", snapshot() == good_tree)
 check("T7 no reboot", resets["n"] == 0)
 
 # ---- T8: per-file mode corrupt-mid-stream stops with complete files ---
-data2 = open(ZIP, "rb").read()
-pos = int(len(data2) * 0.5)
-bad2 = data2[:pos] + bytes(b ^ 0xFF for b in data2[pos:pos+8]) + data2[pos+8:]
+bad2 = corrupt_member(ZIP, "knowco2/helpers.py")
 open("/tmp_ota.zip","wb").write(bad2)
 results.clear(); resets["n"] = 0
 routes._fs_free_bytes = lambda: low_space_free

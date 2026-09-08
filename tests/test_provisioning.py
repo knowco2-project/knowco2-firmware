@@ -236,7 +236,7 @@ class ProvisioningTests(unittest.TestCase):
         body = json.dumps({"alerts_enabled": False}).encode("utf-8")
         request = (
             b"PATCH /api/v1/settings HTTP/1.1\r\n"
-            b"Host: device\r\nContent-Type: application/json\r\n"
+            b"Host: 192.168.4.1\r\nContent-Type: application/json\r\n"
             b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n\r\n" + body
         )
         patch_conn = RequestConn(request)

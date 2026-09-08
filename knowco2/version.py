@@ -6,7 +6,7 @@
 
 import sys as _sys
 
-FIRMWARE_VERSION = "RC-53-Onboarding-v1"
+FIRMWARE_VERSION = "RC-54-USB-v1-test1"
 
 
 def detect_circuitpython_version():

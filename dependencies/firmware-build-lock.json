@@ -1,0 +1,89 @@
+{
+  "schema": "knowco2.firmware.dependencies.v1",
+  "hardware_profile": "KC2-01",
+  "approval": {
+    "state": "current-production-baseline",
+    "automatic_updates": false,
+    "requires_hardware_requalification_on_change": true,
+    "notes": "This lock records the dependency tuple already used by the current firmware release process. A newer CircuitPython or Adafruit bundle must be proposed and qualified before this file changes."
+  },
+  "board": {
+    "id": "adafruit_feather_esp32s3_reverse_tft",
+    "model": "Adafruit Feather ESP32-S3 Reverse TFT"
+  },
+  "circuitpython": {
+    "version": "10.2.1",
+    "major": 10,
+    "minimum_supported": "10.0.3",
+    "maximum_exclusive": "11.0.0",
+    "download_url": "https://downloads.circuitpython.org/bin/adafruit_feather_esp32s3_reverse_tft/en_US/adafruit-circuitpython-adafruit_feather_esp32s3_reverse_tft-en_US-10.2.1.uf2",
+    "checked_in_path": "circuitpython-release/10.2.1/adafruit-circuitpython-adafruit_feather_esp32s3_reverse_tft-en_US-10.2.1.uf2",
+    "checked_in_git_blob_sha": "f2c78c71bc58fa76dd6c09ab5c1f605498473207"
+  },
+  "library_bundle": {
+    "tag": "20260520",
+    "major": 10,
+    "source_asset": {
+      "filename": "adafruit-circuitpython-bundle-py-20260520.zip",
+      "url": "https://github.com/adafruit/Adafruit_CircuitPython_Bundle/releases/download/20260520/adafruit-circuitpython-bundle-py-20260520.zip",
+      "sha256": "b867103d0439853fce73b4d2cd640e12d1f0e045002f6ac79431527178669c55"
+    },
+    "precompiled_asset": {
+      "filename": "adafruit-circuitpython-bundle-10.x-mpy-20260520.zip",
+      "url": "https://github.com/adafruit/Adafruit_CircuitPython_Bundle/releases/download/20260520/adafruit-circuitpython-bundle-10.x-mpy-20260520.zip",
+      "sha256": "56725e8ce185291f66358ea34661d9f34aa2773dab8d6b79d96e4a79ff2ba966"
+    },
+    "vendored_path": "lib-2026-05-20-release",
+    "vendored_git_tree_sha": "3a88e2948952a8f80d2da6cf5b42854755a8ed3f",
+    "library_set_id": "cp10.2.1-bundle20260520-3a88e2948952",
+    "expected_top_level": [
+      "adafruit_connection_manager.mpy",
+      "adafruit_display_text",
+      "adafruit_hashlib",
+      "adafruit_httpserver",
+      "adafruit_max1704x.mpy",
+      "adafruit_minimqtt",
+      "adafruit_miniqr.mpy",
+      "adafruit_ntp.mpy",
+      "adafruit_register",
+      "adafruit_requests.mpy",
+      "adafruit_scd30.mpy",
+      "adafruit_scd4x.mpy",
+      "adafruit_stcc4.mpy",
+      "adafruit_ticks.mpy"
+    ],
+    "release_commit": "258a344fa879a2aace636956fed52e1148b4176b"
+  },
+  "mpy_cross": {
+    "version": "10.2.1",
+    "source_repository": "https://github.com/adafruit/circuitpython.git",
+    "source_ref": "10.2.1",
+    "source_commit": "bcfcb511352652d7cb62d3b415e4a624380f1830",
+    "huffman_repository": "https://github.com/tannewt/huffman.git",
+    "huffman_commit": "27b1bba76198a0b343f694a6d680b5293d1c56aa",
+    "expected_mpy_header": [
+      67,
+      6,
+      0,
+      31
+    ]
+  },
+  "release": {
+    "compatibility_schema": "knowco2.firmware.compatibility.v1",
+    "build_manifest_schema": "knowco2.firmware.build.v1",
+    "supported_major_versions": [
+      10
+    ],
+    "production_tested": [
+      "10.2.1"
+    ],
+    "source_asset_template": "knowco2-dev-{release}.zip",
+    "full_asset_template": "knowco2-full-{release}.zip",
+    "ota_asset_template": "knowco2-ota-{release}.zip",
+    "source_code_asset_template": "knowco2-source-{release}.zip"
+  },
+  "monitor": {
+    "release_api": "https://api.github.com/repos/adafruit/Adafruit_CircuitPython_Bundle/releases/latest",
+    "issue_title": "Review newer Adafruit CircuitPython bundle"
+  }
+}

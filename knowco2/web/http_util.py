@@ -12,6 +12,60 @@ from .. import state
 from ..helpers import log
 
 
+def _request_header(request_raw, name):
+    """Return a lower-cost ASCII request header without retaining the body."""
+    wanted = name.lower().encode("ascii") + b":"
+    head = request_raw.split(b"\r\n\r\n", 1)[0].replace(b"\r\n", b"\n")
+    for line in head.split(b"\n")[1:]:
+        if line.lower().startswith(wanted):
+            try:
+                return line.split(b":", 1)[1].strip().decode("ascii", "ignore")
+            except Exception:
+                return ""
+    return ""
+
+
+def _authority_host(value):
+    """Extract a lowercase host from an HTTP Host or Origin value."""
+    value = (value or "").strip().lower()
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    value = value.split("/", 1)[0]
+    if value.startswith("["):
+        end = value.find("]")
+        return value[1:end] if end > 0 else ""
+    return value.split(":", 1)[0]
+
+
+def request_source_allowed(request_raw, allowed_hosts):
+    """Validate browser source headers for a local state-changing request.
+
+    Host validation blocks DNS-rebinding requests after an attacker hostname is
+    rebound to the device. Origin and Sec-Fetch-Site checks block ordinary
+    cross-site form/fetch requests. Native clients may omit Origin and
+    Sec-Fetch-Site, but HTTP/1.1 state changes must always name this device in
+    Host.
+    """
+    allowed = set()
+    for value in allowed_hosts or ():
+        host = _authority_host(value)
+        if host:
+            allowed.add(host)
+
+    request_host = _authority_host(_request_header(request_raw, "host"))
+    if not request_host or request_host not in allowed:
+        return False
+
+    fetch_site = _request_header(request_raw, "sec-fetch-site").strip().lower()
+    if fetch_site == "cross-site":
+        return False
+
+    origin = _request_header(request_raw, "origin")
+    if origin and _authority_host(origin) not in allowed:
+        return False
+    return True
+
+
 def _feed_watchdog():
     """Feed the hardware watchdog during longer socket transfers."""
     try:
@@ -75,11 +129,9 @@ def send_all(conn, data, timeout=12.0):
 
 
 def build_response(status_code, content_type, body_bytes=b"", cors=False):
-    """Build an HTTP response. CORS is OPT-IN (cors=True) and reserved for
-    read-only JSON endpoints (/data, /status). State-changing and HTML
-    responses must never carry Access-Control-Allow-Origin: * — a wildcard
-    there lets any web page the owner visits script the portal cross-origin
-    (drive-by settings/OTA abuse)."""
+    """Build an HTTP response. CORS is opt-in and must be used only for a
+    deliberately public, data-minimized read endpoint. State-changing,
+    diagnostic, and HTML responses must never use wildcard CORS."""
     reason = {
         200: "OK",
         202: "Accepted",

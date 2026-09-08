@@ -44,7 +44,7 @@ MAX_POINTS = config.MAX_POINTS_DEFAULT
 # ── Settings dict (loaded from settings.json) ───────────────────────
 settings = {}
 
-# ── Filesystem writability (CIRCUITPY is read-only while USB-mounted) ─
+# ── Filesystem writability (read-only while the service volume is USB-mounted) ─
 fs_readonly = False
 fs_warned = False
 

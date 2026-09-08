@@ -29,11 +29,14 @@ bar is: readable code, tested changes, honest commit messages.
 
 ## Testing on hardware
 
-CIRCUITPY workflow: hold button B while pressing Reset to expose the
-USB drive with host write access; copy your tree; eject properly.
+Service-volume workflow: hold physical button B while pressing Reset to expose
+the `KNOWCO2` volume with host write access; copy your tree; eject properly.
 Serial REPL: `screen /dev/tty.usbmodem* 115200`, Ctrl-C to stop the
 firmware, Ctrl-D to reload. OTA: web UI -> Update, unlocked by admin
 password or holding A+B for 3 s.
+
+Use the product, company, model, button, and USB names in
+[PRODUCT_NAMING.md](PRODUCT_NAMING.md) for every customer-visible string.
 
 ## Releases (maintainers)
 

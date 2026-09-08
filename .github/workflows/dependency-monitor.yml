@@ -1,0 +1,129 @@
+name: CircuitPython dependency monitor
+
+on:
+  schedule:
+    - cron: "17 13 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: circuitpython-dependency-monitor
+  cancel-in-progress: true
+
+jobs:
+  check-bundle:
+    runs-on: codebuild-knowco2-firmware-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify CodeBuild runner
+        run: test "${CODEBUILD_BUILD_ID:-}" != ""
+
+      - name: Verify current dependency lock
+        run: python3 tools/firmware_dependencies.py verify
+
+      - name: Check official Adafruit bundle release
+        id: bundle
+        run: |
+          python3 tools/firmware_dependencies.py check-upstream \
+            --json-output dependency-update.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Write monitor summary
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          report = json.load(open("dependency-update.json", encoding="utf-8"))
+          print("## CircuitPython bundle dependency check")
+          print()
+          print(f"- Locked bundle: `{report['current_tag']}`")
+          print(f"- Latest official bundle: `{report['latest_tag']}`")
+          print(f"- Upstream release commit: `{report['release_commit']}`")
+          print(f"- Update candidate available: **{report['update_available']}**")
+          print(f"- Source asset SHA-256: `{report['source_asset']['sha256']}`")
+          print(f"- 10.x MPY asset SHA-256: `{report['precompiled_asset']['sha256']}`")
+          print()
+          print("This monitor never changes the production lock automatically.")
+          PY
+
+      - name: Open or refresh dependency review issue
+        if: steps.bundle.outputs.update_available == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ISSUE_TITLE: Review newer Adafruit CircuitPython bundle
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          report = json.load(open("dependency-update.json", encoding="utf-8"))
+          title = os.environ["ISSUE_TITLE"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GITHUB_TOKEN"]
+
+          body = "\n".join([
+              "A newer official Adafruit CircuitPython bundle is available for review.",
+              "",
+              f"- Current locked bundle: `{report['current_tag']}`",
+              f"- Candidate bundle: `{report['latest_tag']}`",
+              f"- Upstream release commit: `{report['release_commit']}`",
+              f"- Source asset: `{report['source_asset']['filename']}`",
+              f"- Source SHA-256: `{report['source_asset']['sha256']}`",
+              f"- 10.x MPY asset: `{report['precompiled_asset']['filename']}`",
+              f"- 10.x MPY SHA-256: `{report['precompiled_asset']['sha256']}`",
+              f"- Release: {report['release_url']}",
+              "",
+              "This is an update candidate only. Do not change the production lock until the vendored library diff, notices, filesystem budget, hardware regression suite, and soak test are complete.",
+              "",
+              "See `DEPENDENCIES.md` for the qualification process.",
+          ])
+
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "knowco2-firmware-dependency-monitor",
+          }
+
+          def request(method, url, payload=None):
+              data = None if payload is None else json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(url, data=data, headers=headers, method=method)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  raw = response.read()
+                  return json.loads(raw) if raw else None
+
+          query = urllib.parse.urlencode({"state": "open", "per_page": 100})
+          issues = request("GET", f"https://api.github.com/repos/{repository}/issues?{query}")
+          existing = next(
+              (item for item in issues if "pull_request" not in item and item.get("title") == title),
+              None,
+          )
+          if existing:
+              request(
+                  "PATCH",
+                  f"https://api.github.com/repos/{repository}/issues/{existing['number']}",
+                  {"body": body},
+              )
+              print(f"Refreshed dependency review issue #{existing['number']}")
+          else:
+              created = request(
+                  "POST",
+                  f"https://api.github.com/repos/{repository}/issues",
+                  {"title": title, "body": body},
+              )
+              print(f"Opened dependency review issue #{created['number']}")
+          PY

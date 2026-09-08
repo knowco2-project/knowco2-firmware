@@ -45,3 +45,14 @@ The listed components are distributed under the MIT License:
 
 The upstream repositories linked above are the authoritative sources for each
 component and its complete license history.
+
+## CircuitPython runtime image
+
+The repository also contains the CircuitPython 10.2.1 runtime image for the
+Adafruit Feather ESP32-S3 Reverse TFT under `circuitpython-release/10.2.1/`.
+CircuitPython is Copyright (c) 2013-2025 Damien P. George and other
+contributors. Its complete distribution license and additional component
+notices are included in
+[`LICENSES/CIRCUITPYTHON-10.2.1.txt`](LICENSES/CIRCUITPYTHON-10.2.1.txt).
+The corresponding source is available from the
+[CircuitPython 10.2.1 tag](https://github.com/adafruit/circuitpython/tree/10.2.1).
