@@ -57,13 +57,20 @@ jobs:
 
   ota-staged-install:
     name: OTA staged install
-    runs-on: ubuntu-latest
-    container:
-      image: python:3.12-slim-bookworm
-      options: --user 0
+    runs-on: codebuild-knowco2-firmware-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify disposable CodeBuild environment
+        run: |
+          test "${CODEBUILD_BUILD_ID:-}" != ""
+          test -w /
 
       - name: Run transactional OTA suite in disposable root filesystem
         working-directory: tests
