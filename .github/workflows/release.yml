@@ -163,6 +163,10 @@ jobs:
           cp "knowco2-build-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_BUILD_MANIFEST.json"
           cp "knowco2-compatibility-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_COMPATIBILITY.json"
 
+          find "$STAGING" -type d -name "__pycache__" -prune -exec rm -rf {} +
+          find "$STAGING" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+          python3 tools/validate_release_tree.py "$STAGING"
+
           cd "$STAGING"
           zip -r "../knowco2-ota-${VERSION}.zip" .
           cd ..
@@ -188,6 +192,10 @@ jobs:
           echo "Using locked lib directory: $KNOWCO2_LIB_DIR"
           cp -R "$KNOWCO2_LIB_DIR"/. "$STAGING/lib/"
 
+          find "$STAGING" -type d -name "__pycache__" -prune -exec rm -rf {} +
+          find "$STAGING" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+          python3 tools/validate_release_tree.py "$STAGING"
+
           cd "$STAGING"
           zip -r "../knowco2-dev-${VERSION}.zip" .
           cd ..
@@ -197,23 +205,24 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           STAGING="staging-full"
           rm -rf "$STAGING"
-          mkdir -p "$STAGING/lib"
+          mkdir -p "$STAGING"
 
-          cp code.py boot.py "$STAGING/"
-          cp -r knowco2 "$STAGING/"
-          cp -r assets "$STAGING/"
+          # build_device_image.py is the single source of truth for the device
+          # filesystem. Do not pre-copy the source package into STAGING: host
+          # Python tests may have recreated __pycache__ directories there.
+          python3 tools/build_device_image.py \
+            --source-root . \
+            --library-root "$KNOWCO2_LIB_DIR" \
+            --mpy-cross "$KNOWCO2_MPY_CROSS_BIN" \
+            --output-root "$STAGING"
+
           mkdir -p "$STAGING/assets/legal"
           cp LICENSE "$STAGING/assets/legal/LICENSE.txt"
           cp THIRD_PARTY_NOTICES.md "$STAGING/assets/legal/THIRD_PARTY_NOTICES.md"
           cp dependencies/firmware-build-lock.json "$STAGING/assets/legal/FIRMWARE_BUILD_LOCK.json"
           cp "knowco2-build-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_BUILD_MANIFEST.json"
           cp "knowco2-compatibility-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_COMPATIBILITY.json"
-
-          python3 tools/build_device_image.py \
-            --source-root . \
-            --library-root "$KNOWCO2_LIB_DIR" \
-            --mpy-cross "$KNOWCO2_MPY_CROSS_BIN" \
-            --output-root "$STAGING"
+          python3 tools/validate_release_tree.py "$STAGING"
 
           cd "$STAGING"
           zip -r "../knowco2-full-${VERSION}.zip" .
