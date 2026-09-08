@@ -111,6 +111,22 @@ knowco2-firmware/
 
 ---
 
+## Continuous integration
+
+All GitHub Actions jobs for this repository run on the project's **ephemeral AWS CodeBuild GitHub Actions runner**, not on shared GitHub-hosted `ubuntu-latest`, `macos-*`, or `windows-*` runners.
+
+The required runner label is:
+
+```text
+codebuild-knowco2-firmware-${{ github.run_id }}-${{ github.run_attempt }}
+```
+
+This applies to pull-request CI, scheduled dependency monitoring, and release builds. The CodeBuild environment is created for the individual Actions run and is discarded afterward. Workflow changes must preserve this runner policy unless the project's CI architecture is deliberately changed and reviewed.
+
+`tools/check_ci_runner_policy.py` is executed by CI and fails if a workflow job falls back to a GitHub-hosted runner or another unapproved runner label. The OTA staged-install test intentionally writes to root-level paths to emulate the CircuitPython filesystem; it therefore runs directly inside the disposable CodeBuild environment rather than inside a GitHub Actions job container.
+
+---
+
 ## Dependencies
 
 All libraries in `lib/` are from the official [Adafruit CircuitPython Bundle](https://github.com/adafruit/Adafruit_CircuitPython_Bundle) (MIT licensed). The pre-compiled `.mpy` snapshot shipped in this repo targets **CircuitPython 10.x**. You can also install them yourself with [`circup`](https://github.com/adafruit/circup):
