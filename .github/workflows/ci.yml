@@ -41,42 +41,7 @@ jobs:
       - name: Remove compile artifacts
         run: find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
-      - name: Run hardware-free behavioral suites
-        working-directory: tests
-        run: |
-          python3 test_firmware_dependencies.py
-          python3 test_cloud_heal.py
-          python3 test_snappy_ui.py
-          python3 test_graph_perf.py
-          python3 test_buttons.py
-          python3 test_web_onboarding.py
-          python3 -m unittest test_api_v1_contract.py
-          python3 test_provisioning.py
-          python3 test_product_naming.py
-          python3 test_i18n.py
-          python3 test_mqtt_tls.py
-          python3 test_boot_security.py
-          python3 test_usb_api.py
-
-  ota-staged-install:
-    name: OTA staged install
-    runs-on: codebuild-knowco2-firmware-${{ github.run_id }}-${{ github.run_attempt }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Verify disposable CodeBuild environment
-        run: |
-          test "${CODEBUILD_BUILD_ID:-}" != ""
-          test -w /
-
-      - name: Run transactional OTA suite in disposable root filesystem
-        working-directory: tests
+      - name: Run every hardware-free suite in an isolated interpreter
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python3 test_ota_staged.py
+        run: python3 tools/run_tests.py

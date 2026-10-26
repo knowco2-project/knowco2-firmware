@@ -227,7 +227,7 @@ class ProvisioningTests(unittest.TestCase):
         self.assertEqual(state.settings["altitude"], 0)
 
     def test_router_returns_json_404_and_accepts_patch(self):
-        missing = RequestConn(b"GET /api/v1/missing HTTP/1.1\r\nHost: device\r\n\r\n")
+        missing = RequestConn(b"GET /api/v1/missing HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n")
         state.http_server_sock = OneClientServer(missing)
         routes.handle_http_client()
         self.assertIn(b"HTTP/1.1 404 Not Found", missing.output)

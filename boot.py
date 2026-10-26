@@ -105,6 +105,15 @@ except Exception:
             pass
 
 if maintenance_mode:
+    # A signed-update version floor is initialized ONLY by this physical
+    # maintenance gesture, never by a network request or a normal boot. The
+    # initializer refuses malformed/nonblank journals and unprovisioned trust.
+    # This is not secure boot: physical service access remains fully trusted.
+    try:
+        from knowco2.ota_security import initialize_baseline
+        initialize_baseline()
+    except Exception as error:
+        print("OTA version state not initialized:", error)
     # Give the host write access to the visible KNOWCO2 service volume.
     try:
         storage.remount("/", readonly=True)
