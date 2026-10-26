@@ -26,43 +26,85 @@ def _request_header(request_raw, name):
 
 
 def _authority_host(value):
-    """Extract a lowercase host from an HTTP Host or Origin value."""
+    """Accept only this HTTP server's unambiguous host[:80] authority.
+
+    No userinfo, alternate ports, paths, Unicode or malformed suffixes are
+    permitted. This device serves HTTP on port 80, not arbitrary origins.
+    """
     value = (value or "").strip().lower()
-    if "://" in value:
-        value = value.split("://", 1)[1]
-    value = value.split("/", 1)[0]
-    if value.startswith("["):
-        end = value.find("]")
-        return value[1:end] if end > 0 else ""
-    return value.split(":", 1)[0]
+    if value.endswith(":80"):
+        value = value[:-3]
+    if not value or len(value) > 253 or value.startswith(".") or value.endswith("."):
+        return ""
+    for char in value:
+        if char not in "abcdefghijklmnopqrstuvwxyz0123456789.-":
+            return ""
+    return value
+
+
+def _source_headers(request_raw):
+    """Reject ambiguous security headers before interpreting any credential."""
+    head, _ = _split_headers_and_body(request_raw)
+    if b"\r\n\r\n" not in request_raw and b"\n\n" not in request_raw:
+        return None
+    result = {}
+    single = ("host", "origin", "referer", "sec-fetch-site", "content-length",
+              "transfer-encoding", "content-type", "x-knowco2-admin-password")
+    for line in head.replace(b"\r\n", b"\n").split(b"\n")[1:]:
+        if not line or line[:1] in (b" ", b"\t") or b":" not in line:
+            return None
+        try:
+            name, value = line.decode("ascii").split(":", 1)
+        except (ValueError, UnicodeError):
+            return None
+        if name != name.strip() or any(ord(c) < 33 or ord(c) > 126 for c in name):
+            return None
+        name = name.lower()
+        value = value.strip()
+        if any(ord(c) < 32 or ord(c) == 127 for c in value):
+            return None
+        if name in single:
+            if name in result:
+                return None
+            result[name] = value
+    # Chunked bodies are unsupported; never interpret CL/TE differently from
+    # a proxy or silently accept a partial state-changing form.
+    if "transfer-encoding" in result:
+        return None
+    return result
 
 
 def request_source_allowed(request_raw, allowed_hosts):
-    """Validate browser source headers for a local state-changing request.
+    """Require an exact device Host and same-origin browser request source.
 
-    Host validation blocks DNS-rebinding requests after an attacker hostname is
-    rebound to the device. Origin and Sec-Fetch-Site checks block ordinary
-    cross-site form/fetch requests. Native clients may omit Origin and
-    Sec-Fetch-Site, but HTTP/1.1 state changes must always name this device in
-    Host.
+    Native clients may omit browser headers. Browser requests may not use a
+    different scheme, port or hostname, even another known device alias.
+    Referer is checked when present, covering browsers that omit Origin.
+    No cookies or bearer sessions are used by the local portal.
     """
-    allowed = set()
-    for value in allowed_hosts or ():
-        host = _authority_host(value)
-        if host:
-            allowed.add(host)
-
-    request_host = _authority_host(_request_header(request_raw, "host"))
+    headers = _source_headers(request_raw)
+    if headers is None:
+        return False
+    allowed = [_authority_host(value) for value in allowed_hosts or ()]
+    request_host = _authority_host(headers.get("host", ""))
     if not request_host or request_host not in allowed:
         return False
-
-    fetch_site = _request_header(request_raw, "sec-fetch-site").strip().lower()
-    if fetch_site == "cross-site":
+    fetch_site = headers.get("sec-fetch-site", "").lower()
+    if fetch_site and fetch_site not in ("same-origin", "none"):
         return False
-
-    origin = _request_header(request_raw, "origin")
-    if origin and _authority_host(origin) not in allowed:
-        return False
+    origin = headers.get("origin", "")
+    if origin:
+        if not origin.lower().startswith("http://"):
+            return False
+        if _authority_host(origin[7:]) != request_host:
+            return False
+    referer = headers.get("referer", "")
+    if referer:
+        if not referer.lower().startswith("http://"):
+            return False
+        authority = referer[7:].split("/", 1)[0]
+        if _authority_host(authority) != request_host:
+            return False
     return True
 
 

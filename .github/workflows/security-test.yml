@@ -1,0 +1,90 @@
+name: Security test artifacts (no release)
+
+on:
+  push:
+    branches:
+      - fix/security-test-ota
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security-test-artifacts:
+    if: github.event_name == 'push' || github.head_ref == 'fix/security-test-ota'
+    runs-on: codebuild-knowco2-firmware-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout exact test commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify runner and locked dependencies
+        run: |
+          test "${CODEBUILD_BUILD_ID:-}" != ""
+          python3 tools/check_ci_runner_policy.py
+          python3 tools/firmware_dependencies.py verify
+          python3 tools/firmware_dependencies.py github-env --output "$GITHUB_ENV"
+      - name: Verify host-only test signer
+        run: openssl version
+      - name: Run security and existing behavioral suites
+        run: python3 tools/run_tests.py
+      - name: Build locked CircuitPython mpy-cross
+        run: |
+          set -euo pipefail
+          BUILD_ROOT="${RUNNER_TEMP:-/tmp}/knowco2-mpy-cross-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          CP_SOURCE="$BUILD_ROOT/circuitpython"
+          rm -rf "$BUILD_ROOT"
+          mkdir -p "$CP_SOURCE"
+
+          git -C "$CP_SOURCE" init -q
+          git -C "$CP_SOURCE" remote add origin "$KNOWCO2_MPY_CROSS_SOURCE_REPOSITORY"
+          git -C "$CP_SOURCE" fetch --depth 1 origin "$KNOWCO2_MPY_CROSS_SOURCE_COMMIT"
+          git -C "$CP_SOURCE" checkout --detach -q FETCH_HEAD
+          test "$(git -C "$CP_SOURCE" rev-parse HEAD)" = "$KNOWCO2_MPY_CROSS_SOURCE_COMMIT"
+
+          # CircuitPython's build system derives its version from git tags.
+          # A commit-only shallow fetch is insufficient and causes
+          # "Cannot determine version" in py/mpversion.mk/py.mk. Fetch the
+          # authoritative Adafruit tags before building while keeping the
+          # checked-out source commit pinned to the lock file.
+          git -C "$CP_SOURCE" fetch --force --tags origin '+refs/tags/*:refs/tags/*'
+
+          mkdir -p "$CP_SOURCE/tools/huffman"
+          git -C "$CP_SOURCE/tools/huffman" init -q
+          git -C "$CP_SOURCE/tools/huffman" remote add origin "$KNOWCO2_HUFFMAN_REPOSITORY"
+          git -C "$CP_SOURCE/tools/huffman" fetch --depth 1 origin "$KNOWCO2_HUFFMAN_COMMIT"
+          git -C "$CP_SOURCE/tools/huffman" checkout --detach -q FETCH_HEAD
+          test "$(git -C "$CP_SOURCE/tools/huffman" rev-parse HEAD)" = "$KNOWCO2_HUFFMAN_COMMIT"
+
+          make -C "$CP_SOURCE/mpy-cross" -j2
+          MPY_CROSS_BIN="$CP_SOURCE/mpy-cross/build/mpy-cross"
+          test -x "$MPY_CROSS_BIN"
+          "$MPY_CROSS_BIN" --version | tee "$BUILD_ROOT/mpy-cross-version.txt"
+          grep -F "$KNOWCO2_MPY_CROSS_VERSION" "$BUILD_ROOT/mpy-cross-version.txt"
+          echo "KNOWCO2_MPY_CROSS_BIN=$MPY_CROSS_BIN" >> "$GITHUB_ENV"
+
+      - name: Build isolated TEST ONLY artifacts
+        env:
+          SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 tools/build_security_test.py \
+            --mpy-cross "$KNOWCO2_MPY_CROSS_BIN" \
+            --commit "$SOURCE_COMMIT" --output-dir dist/security-test
+      - name: Upload test bundle only (never a GitHub release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: knowco2-security-test-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dist/security-test/
+          if-no-files-found: error
+          retention-days: 30

@@ -1,3 +1,5 @@
 .DS_Store
 __pycache__/
 *.pyc
+# Local security-test outputs are generated artifacts, never source.
+dist/

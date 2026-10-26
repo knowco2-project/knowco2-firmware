@@ -1,266 +1,178 @@
 #!/usr/bin/env python3
-"""OTA transactional-install test: runs the REAL _process_zip_update from
-RC-48v2 routes.py against the real OTA zip inside this sandbox's root fs.
-Scenarios: happy path, corrupted entry, truncated zip, staging cleanup."""
-import sys, types, os, shutil, zlib, time as _t, zipfile
+"""Real signed OTA installer integration in a temporary filesystem (never /)."""
+import hashlib
+from pathlib import Path
+import sys
+import tempfile
+import types
+import unittest
+from unittest.mock import patch
+import zipfile
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, REPO_ROOT)
-
-# ---- mocks (CP-only modules) -----------------------------------------
-for name in ("wifi", "socketpool", "ssl", "adafruit_requests",
-             "adafruit_connection_manager", "espidf", "rtc", "storage",
-             "mdns", "board", "displayio", "digitalio", "supervisor_x"):
-    sys.modules.setdefault(name, types.ModuleType(name))
-sys.modules["ssl"].create_default_context = lambda: object()
-
-mc = types.ModuleType("microcontroller")
-mc.nvm = None
-resets = {"n": 0}
-def _rst(): resets["n"] += 1
-mc.reset = _rst
-sys.modules["microcontroller"] = mc
-
-from knowco2 import state
-state._wd = None
-state.settings = {}
-
-import knowco2.runtime as runtime
-runtime.show_status = lambda *a, **k: None
-
-import knowco2.web.routes as routes
-import time
-_orig_sleep = time.sleep
-time.sleep = lambda s: None  # skip the 3s pre-reboot wait
-
-# capture OTA results instead of a socket
-results = []
-def fake_send_ota_result(conn, success, message):
-    results.append((success, message))
-routes._send_ota_result = fake_send_ota_result
-
-ZIP = os.environ.get("KNOWCO2_OTA_TEST_ZIP", "")
-_created_fixture = False
-if not ZIP:
-    ZIP = "/tmp/knowco2-ota-ci.zip"
-    _created_fixture = True
-    try:
-        os.remove(ZIP)
-    except OSError:
-        pass
-    with zipfile.ZipFile(ZIP, "w", zipfile.ZIP_DEFLATED) as fixture:
-        for filename in ("code.py", "boot.py"):
-            fixture.write(os.path.join(REPO_ROOT, filename), filename)
-        for dirname in ("knowco2", "assets"):
-            source_root = os.path.join(REPO_ROOT, dirname)
-            for dirpath, _, filenames in os.walk(source_root):
-                for filename in filenames:
-                    source = os.path.join(dirpath, filename)
-                    fixture.write(source, os.path.relpath(source, REPO_ROOT))
-        fixture.write(
-            os.path.join(REPO_ROOT, "LICENSE"),
-            "assets/legal/LICENSE.txt",
-        )
-        fixture.write(
-            os.path.join(REPO_ROOT, "THIRD_PARTY_NOTICES.md"),
-            "assets/legal/THIRD_PARTY_NOTICES.md",
-        )
-
-with zipfile.ZipFile(ZIP) as fixture:
-    installable = [
-        info
-        for info in fixture.infolist()
-        if not info.is_dir() and routes._zip_safe_path(info.filename)
-    ]
-    expected_file_count = len(installable)
-    largest_installable = max(info.file_size for info in installable)
-    low_space_free = largest_installable + 32768
-expected_version = open(
-    os.path.join(REPO_ROOT, "knowco2", "version.py"), "rb"
-).read()
-
-fails = []
-def check(name, cond, extra=""):
-    print(("PASS" if cond else "FAIL"), "-", name, extra)
-    if not cond: fails.append(name)
-
-def clean_root():
-    for p in ("/code.py", "/code.py.bak", "/boot.py", "/knowco2", "/assets",
-              "/ota_staged", "/tmp_ota.zip"):
-        if os.path.isdir(p): shutil.rmtree(p, ignore_errors=True)
-        elif os.path.exists(p): os.remove(p)
-
-def snapshot(root="/knowco2"):
-    out = {}
-    for dirpath, _, files in os.walk(root):
-        for f in files:
-            p = os.path.join(dirpath, f)
-            with open(p, "rb") as fh:
-                out[p] = zlib.crc32(fh.read())
-    return out
-
-def corrupt_member(archive_path, member_name):
-    """Flip a byte inside a known member's compressed-data region.
-
-    Percentage offsets into a ZIP are not reliable: adding an unrelated file
-    can move the chosen offset into padding or metadata and leave every member
-    valid. ZipInfo.header_offset plus the local-header lengths identifies the
-    actual payload without depending on archive layout.
-    """
-    data = bytearray(open(archive_path, "rb").read())
-    with zipfile.ZipFile(archive_path) as archive:
-        info = archive.getinfo(member_name)
-    header = info.header_offset
-    if data[header:header + 4] != b"PK\x03\x04":
-        raise AssertionError("invalid local ZIP header")
-    name_len = int.from_bytes(data[header + 26:header + 28], "little")
-    extra_len = int.from_bytes(data[header + 28:header + 30], "little")
-    payload_start = header + 30 + name_len + extra_len
-    if info.compress_size < 1:
-        raise AssertionError("selected ZIP member has no payload")
-    position = payload_start + (info.compress_size // 2)
-    data[position] ^= 0xFF
-    return bytes(data)
-
-# ---- T1: happy path ---------------------------------------------------
-clean_root()
-shutil.copy(ZIP, "/tmp_ota.zip")
-results.clear()
-routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
-ok, msg = results[-1]
-check("T1 install succeeded", ok, "| " + msg[:90])
-check("T1 all files CRC-verified", "%d files" % expected_file_count in msg)
-check("T1 helpers.py intact with log()", os.path.exists("/knowco2/helpers.py")
-      and b"def log(" in open("/knowco2/helpers.py","rb").read())
-check("T1 version.py matches source",
-      expected_version == open("/knowco2/version.py", "rb").read())
-check("T1 license notice installed",
-      os.path.exists("/assets/legal/LICENSE.txt")
-      and os.path.exists("/assets/legal/THIRD_PARTY_NOTICES.md"))
-check("T1 staging removed", not os.path.exists("/ota_staged"))
-check("T1 zip removed", not os.path.exists("/tmp_ota.zip"))
-check("T1 reboot attempted", resets["n"] == 1)
-
-good_tree = snapshot()
-
-# ---- T2: corrupted entry → abort, tree untouched ----------------------
-data = open(ZIP, "rb").read()
-bad = corrupt_member(ZIP, "knowco2/helpers.py")
-open("/tmp_ota.zip","wb").write(bad)
-results.clear(); resets["n"] = 0
-routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
-ok, msg = results[-1]
-check("T2 corrupt zip rejected", not ok, "| " + msg[:110])
-check("T2 message says nothing changed", "Nothing was changed" in msg)
-check("T2 live tree byte-identical", snapshot() == good_tree)
-check("T2 no staging leftovers", not os.path.exists("/ota_staged"))
-check("T2 no reboot", resets["n"] == 0)
-
-# ---- T3: truncated zip (simulates dropped upload) ---------------------
-open("/tmp_ota.zip","wb").write(data[:len(data)//2])
-results.clear()
-routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
-ok, msg = results[-1]
-check("T3 truncated zip rejected", not ok, "| " + msg[:110])
-check("T3 live tree byte-identical", snapshot() == good_tree)
-check("T3 no staging leftovers", not os.path.exists("/ota_staged"))
-
-# ---- T4: stale staging dir from an interrupted OTA is cleared ---------
-os.makedirs("/ota_staged/knowco2", exist_ok=True)
-open("/ota_staged/knowco2/junk.py","w").write("truncated garba")
-shutil.copy(ZIP, "/tmp_ota.zip")
-results.clear(); resets["n"] = 0
-routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
-ok, msg = results[-1]
-check("T4 succeeds despite stale staging", ok)
-check("T4 stale staging cleared", not os.path.exists("/ota_staged"))
-
-# ---- T5: single-byte flip inside ONE file is caught by CRC ------------
-# Rebuild a zip where knowco2/helpers.py content is corrupted but sizes kept
-src = zipfile.ZipFile(ZIP)
-with zipfile.ZipFile("/tmp_ota.zip", "w") as dst:
-    for info in src.infolist():
-        raw = src.read(info.filename)
-        if info.filename == "knowco2/helpers.py":
-            raw = raw.replace(b"def log(", b"dEf log(", 1)
-            # keep declared CRC = original (mismatch on purpose)
-            zi = zipfile.ZipInfo(info.filename)
-            dst.writestr(zi, raw)
-            # overwrite central-dir CRC with the ORIGINAL to force mismatch
-            dst.infolist()[-1].CRC = info.CRC
-        else:
-            dst.writestr(info, raw)
-results.clear()
-routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
-ok, msg = results[-1]
-check("T5 CRC mismatch rejected", (not ok) and ("CRC" in msg), "| " + msg[:110])
-check("T5 live tree byte-identical", snapshot() == good_tree)
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from test_provisioning import routes, state
+from knowco2 import ota_security as ota
+from tools import sign_ota as signer
 
 
-# ---- T6: LOW-SPACE PER-FILE MODE --------------------------------------
-clean_root()
-shutil.copy(ZIP, "/tmp_ota.zip")
-results.clear(); resets["n"] = 0
-orig_free = routes._fs_free_bytes
-routes._fs_free_bytes = lambda: low_space_free  # staging is tight; one file still fits
-routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
-routes._fs_free_bytes = orig_free
-ok, msg = results[-1]
-check("T6 per-file mode succeeds", ok, "| " + msg[:90])
-check("T6 summary says per-file", "per-file mode" in msg)
-check("T6 tree matches good install", snapshot() == good_tree)
-check("T6 staging removed", not os.path.exists("/ota_staged"))
-check("T6 reboot attempted", resets["n"] == 1)
+class SignedInstallTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.modulus = signer.test_modulus()
 
-# ---- T7: per-file mode aborts when even one file can't fit ------------
-shutil.copy(ZIP, "/tmp_ota.zip")
-results.clear(); resets["n"] = 0
-routes._fs_free_bytes = lambda: 10_000    # < largest file
-routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
-routes._fs_free_bytes = orig_free
-ok, msg = results[-1]
-check("T7 rejects impossible install", not ok, "| " + msg[:90])
-check("T7 live tree untouched", snapshot() == good_tree)
-check("T7 no reboot", resets["n"] == 0)
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.device = self.root / "device"
+        self.device.mkdir()
+        self.path = self.root / "upload.zip"
+        self.trust = types.SimpleNamespace(PUBLIC_KEY_N_HEX=self.modulus,
+            KEY_ID=signer.TEST_KEY_ID, TEST_ONLY=True, MIN_SEQUENCE=1,
+            BUILD_ID="0" * 40, LIBRARY_SET_ID="cp10.2.1-bundle20260520-3a88e2948952",
+            MPY_ABI="C6.0.31")
+        self.nvm = bytearray(256)
+        self.results = []
+        self.reset = []
+        self.files = {"boot.py": b"# new boot\n", "code.py": b"# new app\n",
+                      "knowco2/version.py": b'FIRMWARE_VERSION = "TEST-2"\n',
+                      "knowco2/example.mpy": b"C\x06\x00\x1f" + b"z" * 60000,
+                      "assets/test.txt": b"test-only\n"}
+        for name, data in {"code.py": b"# old app\n", "boot.py": b"# old boot\n",
+                           "knowco2/example.py": b"# stale source alias\n"}.items():
+            dest = self.device / name
+            dest.parent.mkdir(exist_ok=True, parents=True)
+            dest.write_bytes(data)
+        self.before = self.snapshot()
+        for mock in (
+            patch.object(routes, "_OTA_FS_ROOT", str(self.device)),
+            patch.object(routes, "_send_ota_result", side_effect=lambda c, ok, msg: self.results.append((ok, msg))),
+            patch.object(routes.time, "sleep", return_value=None),
+            patch.object(routes, "microcontroller", types.SimpleNamespace(reset=lambda: self.reset.append(1))),
+            patch.object(routes, "_fs_free_bytes", return_value=10000000),
+            patch.object(ota, "ota_trust", self.trust),
+            patch.dict(sys.modules, {"microcontroller": types.SimpleNamespace(nvm=self.nvm)}),
+        ):
+            mock.start()
+            self.addCleanup(mock.stop)
+        state._wd = None
+        ota.initialize_baseline(nvm=self.nvm, trust=self.trust)
+        self.package()
 
-# ---- T8: per-file mode corrupt-mid-stream stops with complete files ---
-bad2 = corrupt_member(ZIP, "knowco2/helpers.py")
-open("/tmp_ota.zip","wb").write(bad2)
-results.clear(); resets["n"] = 0
-routes._fs_free_bytes = lambda: low_space_free
-routes._process_zip_update(conn=types.SimpleNamespace(send=lambda *a: 0), zip_path="/tmp_ota.zip")
-routes._fs_free_bytes = orig_free
-ok, msg = results[-1]
-check("T8 per-file corrupt stops", not ok, "| " + msg[:110])
-check("T8 message says re-run", "re-run" in msg.lower())
-check("T8 all files on disk complete (parse+compile ok)",
-      all(compile(open(p).read(), p, "exec") or True
-          for p in [os.path.join(dp, f) for dp, _, fs in os.walk("/knowco2")
-                    for f in fs if f.endswith(".py")]))
-check("T8 no reboot on partial", resets["n"] == 0)
+    def snapshot(self):
+        return {str(p.relative_to(self.device)): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in self.device.rglob("*") if p.is_file() and "ota_staged" not in p.parts}
 
-# ---- T9: junk cleanup reclaims macOS metadata + stale artifacts --------
-os.makedirs("/knowco2/.fseventsd", exist_ok=True)
-open("/knowco2/.fseventsd/log1","w").write("x" * 5000)
-open("/knowco2/.DS_Store","w").write("x" * 6148)
-open("/knowco2/._helpers.py","w").write("x" * 4096)
-open("/code.py.ota","w").write("x" * 2000)
-freed = routes._fs_junk_cleanup("/knowco2")
-check("T9 junk cleanup freed bytes", freed >= 5000 + 6148 + 4096 + 2000, "| freed=%d" % freed)
-check("T9 metadata gone", not os.path.exists("/knowco2/.DS_Store")
-      and not os.path.exists("/knowco2/._helpers.py")
-      and not os.path.exists("/knowco2/.fseventsd")
-      and not os.path.exists("/code.py.ota"))
-check("T9 real files untouched", snapshot() == good_tree)
+    def package(self, sequence=2):
+        signer.write_package(self.files, self.path, sequence)
 
-clean_root()
-if _created_fixture:
-    try:
-        os.remove(ZIP)
-    except OSError:
-        pass
-time.sleep = _orig_sleep
-print()
-if fails:
-    print("FAILURES:", fails); sys.exit(1)
-print("ALL OTA TESTS PASSED")
+    def install(self):
+        routes._process_zip_update(None, str(self.path))
+        return self.results[-1]
+
+    def test_signed_install_readback_alias_removal_and_persistent_replay(self):
+        ok, msg = self.install()
+        self.assertTrue(ok, msg)
+        self.assertIn("SHA-256", msg)
+        self.assertIn("TEST ONLY", msg)
+        for name, data in self.files.items():
+            self.assertEqual((self.device / name).read_bytes(), data)
+        self.assertEqual((self.device / "code.py.bak").read_bytes(), b"# old app\n")
+        self.assertFalse((self.device / "knowco2/example.py").exists())
+        self.assertFalse((self.device / "ota_staged").exists())
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.reset, [1])
+        completed = self.snapshot()
+        self.package()
+        self.assertFalse(self.install()[0])
+        self.assertEqual(self.snapshot(), completed)
+        self.package(sequence=1)
+        self.assertFalse(self.install()[0])
+        self.assertEqual(self.snapshot(), completed)
+
+    def test_tampering_rejected_before_any_live_file_change_or_reservation(self):
+        original_nvm = bytes(self.nvm)
+        raw = bytearray(self.path.read_bytes())
+        with zipfile.ZipFile(self.path) as zf:
+            info = zf.getinfo("knowco2/example.mpy")
+            offset = info.header_offset
+        name_len = int.from_bytes(raw[offset+26:offset+28], "little")
+        extra_len = int.from_bytes(raw[offset+28:offset+30], "little")
+        raw[offset+30+name_len+extra_len+10] ^= 1
+        self.path.write_bytes(raw)
+        ok, msg = self.install()
+        self.assertFalse(ok, msg)
+        self.assertEqual(self.snapshot(), self.before)
+        self.assertEqual(bytes(self.nvm), original_nvm)
+        self.assertFalse(self.reset)
+
+    def test_truncation_and_unsigned_package_rejected(self):
+        self.path.write_bytes(self.path.read_bytes()[:100])
+        self.assertFalse(self.install()[0])
+        with zipfile.ZipFile(self.path, "w") as zf:
+            for name, data in self.files.items():
+                zf.writestr(name, data)
+        self.assertFalse(self.install()[0])
+        self.assertEqual(self.snapshot(), self.before)
+
+    def test_staged_flash_hash_failure_never_reserves_or_commits(self):
+        original_nvm = bytes(self.nvm)
+        with patch.object(ota, "verify_staged_file", side_effect=ota.OTARejected("flash changed")):
+            self.assertFalse(self.install()[0])
+        self.assertEqual(self.snapshot(), self.before)
+        self.assertEqual(bytes(self.nvm), original_nvm)
+        self.assertFalse((self.device / "ota_staged").exists())
+
+    def test_low_space_fails_before_reservation(self):
+        original_nvm = bytes(self.nvm)
+        with patch.object(routes, "_fs_free_bytes", return_value=1000):
+            self.assertFalse(self.install()[0])
+        self.assertEqual(self.snapshot(), self.before)
+        self.assertEqual(bytes(self.nvm), original_nvm)
+
+    def test_per_file_mode_and_pending_exact_retry(self):
+        # 60004+32768 fits, but total+49152 does not: force per-file mode.
+        real_extract = ota.extract_verified_entry
+        count = [0]
+        def fail_second(*args, **kwargs):
+            count[0] += 1
+            if count[0] == 2:
+                raise ota.OTARejected("simulated flash interruption")
+            return real_extract(*args, **kwargs)
+        with patch.object(routes, "_fs_free_bytes", return_value=100000), \
+             patch.object(ota, "extract_verified_entry", side_effect=fail_second):
+            ok, msg = self.install()
+        self.assertFalse(ok)
+        self.assertIn("Retry this exact", msg)
+        self.assertFalse(self.reset)
+        self.assertFalse(ota._state(self.nvm)["complete"])
+        # Conflicting same-sequence package cannot replace pending version.
+        self.files["code.py"] += b"# conflicting build\n"
+        self.package()
+        self.assertFalse(self.install()[0])
+        self.files["code.py"] = b"# new app\n"
+        self.package()
+        with patch.object(routes, "_fs_free_bytes", return_value=100000):
+            ok, msg = self.install()
+        self.assertTrue(ok, msg)
+        self.assertIn("per-file", msg)
+        self.assertTrue(ota._state(self.nvm)["complete"])
+        self.assertEqual(self.reset, [1])
+
+    def test_reservation_failure_leaves_live_files_unchanged(self):
+        with patch.object(ota, "reserve_version", side_effect=ota.OTARejected("NVM write failed")):
+            self.assertFalse(self.install()[0])
+        self.assertEqual(self.snapshot(), self.before)
+        self.assertFalse(self.reset)
+
+    def test_stale_staging_is_removed_after_verified_package(self):
+        junk = self.device / "ota_staged/old/junk.py"
+        junk.parent.mkdir(parents=True)
+        junk.write_bytes(b"incomplete")
+        self.assertTrue(self.install()[0])
+        self.assertFalse((self.device / "ota_staged").exists())
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
