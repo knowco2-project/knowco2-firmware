@@ -5,6 +5,7 @@ Run: python3 -m unittest discover -s tests -p test_scd4x_compatibility.py -v
 """
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import types
@@ -118,7 +119,7 @@ class SimulatedSCD4x:
         buffer[:end] = self.reply
 
 
-def load_pinned_driver(version):
+def load_pinned_driver(source_path):
     bus = types.ModuleType("adafruit_bus_device")
     def i2c_device(i2c, address):
         assert address == 0x62
@@ -129,7 +130,7 @@ def load_pinned_driver(version):
         "micropython": types.SimpleNamespace(const=lambda value: value),
         "busio": types.SimpleNamespace(I2C=object),
     }
-    path = ROOT / ("tests/fixtures/adafruit_scd4x_" + version.replace(".", "_") + ".py")
+    path = ROOT / source_path
     spec = importlib.util.spec_from_file_location("pinned_scd4x", path)
     driver = importlib.util.module_from_spec(spec)
     with patch.dict(sys.modules, modules):
@@ -138,12 +139,12 @@ def load_pinned_driver(version):
 
 
 class SCD4xCompatibilityTests(unittest.TestCase):
-    driver_version = "1.4.11"
+    source_path = "tests/fixtures/adafruit_scd4x_1_4_11.py"
     source_sha256 = "4f7578a9cd4003c2e37f69e1887f574a6129e5d08883f3cc250e18d13ca5c827"
 
     @classmethod
     def setUpClass(cls):
-        cls.driver = load_pinned_driver(cls.driver_version)
+        cls.driver = load_pinned_driver(cls.source_path)
         import knowco2.sensors.scd4x as adapter
         cls.adapter = adapter
 
@@ -159,7 +160,7 @@ class SCD4xCompatibilityTests(unittest.TestCase):
         return sensor
 
     def test_vendor_source_fixture_has_reviewed_hash(self):
-        source = ROOT / ("tests/fixtures/adafruit_scd4x_" + self.driver_version.replace(".", "_") + ".py")
+        source = ROOT / self.source_path
         self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(),
                          self.source_sha256)
 
@@ -313,8 +314,13 @@ class SCD4xCompatibilityTests(unittest.TestCase):
 
 
 class SCD4xReleasedDriverTests(SCD4xCompatibilityTests):
-    driver_version = "1.4.13"
-    source_sha256 = "711c28250f95a1ae569c9c30a89f33ea31c6c3878c3b106ce48b6e346dad4c7f"
+    # Always exercise the candidate selected by the build lock. A later pin
+    # update must not silently keep testing only the previous vendor release.
+    _lock = json.loads((ROOT / "dependencies/firmware-build-lock.json").read_text())
+    _component = next(item for item in _lock["library_bundle"]["component_overrides"]
+                      if item["module"] == "adafruit_scd4x")
+    source_path = _component["source_path"]
+    source_sha256 = _component["source_sha256"]
 
     def test_released_driver_uses_public_api_without_legacy_frc_reply_access(self):
         sensor = self.detect()

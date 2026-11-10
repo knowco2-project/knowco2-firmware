@@ -77,6 +77,8 @@ Before removing the old-driver compatibility path:
 Future driver updates follow the same process: review an upstream release,
 replace the single locked component if justified, verify official archive
 digests, rerun the protocol and packaging tests, and complete physical tests.
+The candidate protocol tests load their source from the dependency lock, so
+changing that pin automatically tests the newly selected driver.
 When a broader bundle refresh includes the chosen driver, remove the override
 and update the base snapshot together. Avoid carrying an override indefinitely
 after it becomes redundant.
