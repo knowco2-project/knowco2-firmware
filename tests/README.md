@@ -6,6 +6,8 @@ espidf, microcontroller). No hardware needed; CI runs them on every PR.
 
 | Suite | Covers |
 |---|---|
+| `../test_sensors.py` | Sensor registry, SCD40/SCD41/SCD43 identity, low-power switching, calibration dispatch and SCD30 fallback |
+| `test_scd4x_compatibility.py` | Pinned Adafruit 1.4.11 source on a simulated I2C bus: command timing, CRC, identity, measurements, calibration and recovery; **not hardware verification** |
 | `test_cloud_heal.py` | Cloud TLS self-heal: pre-flight, teardown, retry-after-pause, bounded reset, web-activity grace, failure forensics |
 | `test_ota_staged.py` | Transactional OTA: staging, CRC verification, corrupt/truncated rejection, low-space per-file mode, junk cleanup. **Writes to the container root filesystem — run inside a disposable container as root**, exactly like CI does |
 | `test_snappy_ui.py` | UI responsiveness: single QR generation, matrix cache hits, deferred rebuild flag, pending-press capture, guarded label writes |
@@ -25,3 +27,14 @@ docker run --rm -v "$PWD/..:/fw:ro" -w /fw/tests python:3.12-slim-bookworm \
 Philosophy: every bug that reached hardware becomes a permanent test.
 The mock stack exists because the alternative — discovering regressions
 on a device with a 240x135 screen — costs hours per cycle.
+
+Run the focused SCD43 compatibility checks from the repository root:
+
+```sh
+python3 test_sensors.py
+python3 -m unittest discover -s tests -p test_scd4x_compatibility.py -v
+```
+
+The offline vendor source fixture and its license/provenance are in
+[`fixtures/`](fixtures/README.md). The two-unit physical validation procedure is
+[`docs/scd43-validation.md`](../docs/scd43-validation.md).

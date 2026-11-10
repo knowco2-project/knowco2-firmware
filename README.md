@@ -6,6 +6,10 @@ KnowCO2-authored firmware is licensed under [MIT](LICENSE). Bundled dependencies
 
 The KnowCO2 firmware runs on [CircuitPython](https://circuitpython.org) on the **Adafruit Feather ESP32-S3 Reverse TFT**. It reads CO₂, temperature, and humidity from an SCD40/SCD41 or SCD30 sensor and displays them locally while optionally publishing to MQTT and cloud services.
 
+SCD43 is under evaluation: command-level compatibility tests and explicit model
+identification are included, but physical compatibility is not yet verified.
+See the [two-unit SCD43 validation procedure](docs/scd43-validation.md).
+
 ---
 
 ## Installing on Your Device

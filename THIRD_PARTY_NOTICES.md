@@ -46,6 +46,12 @@ The listed components are distributed under the MIT License:
 The upstream repositories linked above are the authoritative sources for each
 component and its complete license history.
 
+The host-only SCD4x protocol tests also include the unmodified Adafruit SCD4X
+1.4.11 source under `tests/fixtures/`. It is covered by the same MIT license,
+with its original copyright header and a local license copy. Exact provenance
+and hashes are in [`tests/fixtures/README.md`](tests/fixtures/README.md).
+This fixture is not installed in device images.
+
 ## CircuitPython runtime image
 
 The repository also contains the CircuitPython 10.2.1 runtime image for the
