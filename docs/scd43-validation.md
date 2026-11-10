@@ -217,7 +217,8 @@ power loss or change the application's saved configuration.
 ASC behavior requires a longer test: its default initial/standard periods are
 44/156 accumulated hours, with uninterrupted operating blocks of at least four
 hours and periodic exposure to the assumed background concentration. Plan a
-7-14 day logged follow-up covering an initial and subsequent correction period;
+10-14 day logged follow-up covering an initial and subsequent correction period
+(at least 200 accumulated operating hours with default periods);
 24-hour stability does not validate ASC. Do not assume the factory 400 ppm ASC
 target equals actual outdoor air. Maintain documented reference exposure and
 record drift before/after; do not shorten the periods simply to get a quick pass.
