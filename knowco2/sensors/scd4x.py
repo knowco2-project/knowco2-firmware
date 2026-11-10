@@ -80,8 +80,9 @@ class SCD4xSensor(CO2Sensor):
         try:
             return self.device.sensor_variant
         except AttributeError:
-            # Locked Adafruit 1.4.11 lacks the public property. Reuse its
-            # command transport and CRC validation; do not upgrade the bundle.
+            # Migration fallback: application-only OTA may leave 1.4.11 on a
+            # device. Complete installs pin 1.4.13 and use the public property.
+            # Remove this fallback only after the older library is retired.
             # _read_reply checks device._buffer, so use that exact buffer.
             self.device._send_command(0x202F, cmd_delay=0.001)
             self.device._read_reply(self.device._buffer, 3)
@@ -119,7 +120,7 @@ class SCD4xSensor(CO2Sensor):
         success = False
         try:
             result = self.device.force_calibration(int(ref_ppm))
-            # Adafruit 1.4.11 unpacks a signed word and compares it with 65535,
+            # Migration fallback: 1.4.11 unpacks a signed word and compares it with 65535,
             # so its failure sentinel (-1 after unpacking) is never rejected.
             # Newer drivers return a signed correction; -1 ppm is valid there.
             if result is None:

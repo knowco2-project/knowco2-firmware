@@ -4,7 +4,10 @@ KnowCO2 firmware release packages may contain pre-compiled libraries from the
 [Adafruit CircuitPython Bundle](https://github.com/adafruit/Adafruit_CircuitPython_Bundle).
 These components are not covered by the KnowCO2 copyright notice. The inventory
 below corresponds to the checked-in `lib-2026-05-20-release/` snapshot and must
-be reviewed whenever that snapshot changes.
+be reviewed whenever that snapshot changes. This is the base 20260520 bundle
+with the explicitly locked, unmodified upstream `adafruit_scd4x` 1.4.13 component
+override. The effective snapshot and component provenance are recorded in
+`dependencies/firmware-build-lock.json`.
 
 | Bundled component | Upstream source | Copyright notice |
 |---|---|---|
@@ -46,8 +49,8 @@ The listed components are distributed under the MIT License:
 The upstream repositories linked above are the authoritative sources for each
 component and its complete license history.
 
-The host-only SCD4x protocol tests also include the unmodified Adafruit SCD4X
-1.4.11 source under `tests/fixtures/`. It is covered by the same MIT license,
+The host-only SCD4x protocol tests also include unmodified Adafruit SCD4X
+1.4.11 and released 1.4.13 source under `tests/fixtures/`. They use the same MIT license,
 with its original copyright header and a local license copy. Exact provenance
 and hashes are in [`tests/fixtures/README.md`](tests/fixtures/README.md).
 This fixture is not installed in device images.

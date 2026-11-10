@@ -9,6 +9,9 @@ The KnowCO2 firmware runs on [CircuitPython](https://circuitpython.org) on the *
 SCD43 is under evaluation: command-level compatibility tests and explicit model
 identification are included, but physical compatibility is not yet verified.
 See the [two-unit SCD43 validation procedure](docs/scd43-validation.md).
+The candidate pins upstream Adafruit SCD4X 1.4.13 for complete installs;
+[driver strategy and upgrade compatibility](docs/scd4x-driver-strategy.md)
+explain why no separate SCD43 driver is needed.
 
 ---
 

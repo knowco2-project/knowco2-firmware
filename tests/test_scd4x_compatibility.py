@@ -1,4 +1,4 @@
-"""Host-only protocol tests: real pinned Adafruit source, simulated I2C sensor.
+"""Host-only protocol tests: pinned Adafruit 1.4.11/1.4.13, simulated I2C.
 
 No CircuitPython bytecode, physical sensor, accuracy or reliability is verified.
 Run: python3 -m unittest discover -s tests -p test_scd4x_compatibility.py -v
@@ -118,7 +118,7 @@ class SimulatedSCD4x:
         buffer[:end] = self.reply
 
 
-def load_pinned_driver():
+def load_pinned_driver(version):
     bus = types.ModuleType("adafruit_bus_device")
     def i2c_device(i2c, address):
         assert address == 0x62
@@ -129,7 +129,7 @@ def load_pinned_driver():
         "micropython": types.SimpleNamespace(const=lambda value: value),
         "busio": types.SimpleNamespace(I2C=object),
     }
-    path = ROOT / "tests/fixtures/adafruit_scd4x_1_4_11.py"
+    path = ROOT / ("tests/fixtures/adafruit_scd4x_" + version.replace(".", "_") + ".py")
     spec = importlib.util.spec_from_file_location("pinned_scd4x", path)
     driver = importlib.util.module_from_spec(spec)
     with patch.dict(sys.modules, modules):
@@ -138,9 +138,12 @@ def load_pinned_driver():
 
 
 class SCD4xCompatibilityTests(unittest.TestCase):
+    driver_version = "1.4.11"
+    source_sha256 = "4f7578a9cd4003c2e37f69e1887f574a6129e5d08883f3cc250e18d13ca5c827"
+
     @classmethod
     def setUpClass(cls):
-        cls.driver = load_pinned_driver()
+        cls.driver = load_pinned_driver(cls.driver_version)
         import knowco2.sensors.scd4x as adapter
         cls.adapter = adapter
 
@@ -156,9 +159,9 @@ class SCD4xCompatibilityTests(unittest.TestCase):
         return sensor
 
     def test_vendor_source_fixture_has_reviewed_hash(self):
-        source = ROOT / "tests/fixtures/adafruit_scd4x_1_4_11.py"
+        source = ROOT / ("tests/fixtures/adafruit_scd4x_" + self.driver_version.replace(".", "_") + ".py")
         self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(),
-                         "4f7578a9cd4003c2e37f69e1887f574a6129e5d08883f3cc250e18d13ca5c827")
+                         self.source_sha256)
 
     def test_newer_frc_signed_negative_one_is_valid(self):
         sensor = self.detect()
@@ -307,6 +310,27 @@ class SCD4xCompatibilityTests(unittest.TestCase):
         sensor = self.detect()
         self.bus.fail_command = 0x21B1
         self.assertFalse(sensor.force_calibration(480))
+
+
+class SCD4xReleasedDriverTests(SCD4xCompatibilityTests):
+    driver_version = "1.4.13"
+    source_sha256 = "711c28250f95a1ae569c9c30a89f33ea31c6c3878c3b106ce48b6e346dad4c7f"
+
+    def test_released_driver_uses_public_api_without_legacy_frc_reply_access(self):
+        sensor = self.detect()
+        # The real vendor method owns its buffer. The adapter must use only
+        # its returned correction and public start/stop APIs with this release.
+        vendor_device = sensor.device
+        class PublicOnly:
+            def __getattr__(self, name):
+                if name.startswith("_"):
+                    raise AssertionError("private vendor access: " + name)
+                return getattr(vendor_device, name)
+        sensor.device = PublicOnly()
+        sensor.device.stop_periodic_measurement()
+        self.assertEqual(sensor._read_variant_raw(), 5)
+        sensor._start_normal_raw()
+        self.assertTrue(sensor.force_calibration(480))
 
 
 if __name__ == "__main__":

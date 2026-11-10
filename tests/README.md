@@ -7,7 +7,8 @@ espidf, microcontroller). No hardware needed; CI runs them on every PR.
 | Suite | Covers |
 |---|---|
 | `../test_sensors.py` | Sensor registry, SCD40/SCD41/SCD43 identity, low-power switching, calibration dispatch and SCD30 fallback |
-| `test_scd4x_compatibility.py` | Pinned Adafruit 1.4.11 source on a simulated I2C bus: command timing, CRC, identity, measurements, calibration and recovery; **not hardware verification** |
+| `test_scd4x_compatibility.py` | Pinned Adafruit 1.4.11 and 1.4.13 source on a simulated I2C bus: command timing, CRC, identity, measurements, calibration, recovery and public-API use; **not hardware verification** |
+| `test_firmware_dependencies.py` | Effective library tree, component release pins, source/MPY drift rejection, manifests and complete-image copying |
 | `test_cloud_heal.py` | Cloud TLS self-heal: pre-flight, teardown, retry-after-pause, bounded reset, web-activity grace, failure forensics |
 | `test_ota_staged.py` | Transactional OTA: staging, CRC verification, corrupt/truncated rejection, low-space per-file mode, junk cleanup. **Writes to the container root filesystem — run inside a disposable container as root**, exactly like CI does |
 | `test_snappy_ui.py` | UI responsiveness: single QR generation, matrix cache hits, deferred rebuild flag, pending-press capture, guarded label writes |

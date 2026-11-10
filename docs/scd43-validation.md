@@ -14,13 +14,15 @@ candidate in PR #22 has not been merged into this branch.
 | Evidence | Result | Limit |
 |---|---|---|
 | Sensirion command specifications | SCD43 shares the periodic measurement, calibration and recovery interface used here | Protocol compatibility is not electrical, enclosure or accuracy qualification |
-| Locked Adafruit bundle | Uses SCD4X 1.4.11; exact upstream source pinned by bundle submodule | Host tests execute source, not the installed CircuitPython `.mpy` |
+| Driver dependency | Main uses 1.4.11; candidate pins official upstream 1.4.13 as one component override | Both driver sources are host-tested; the installed CircuitPython `.mpy` still needs hardware testing |
 | Existing main implementation | Incorrect identity heuristic, low-power and reset API names; idle-setting and FRC lifecycle problems | These affect SCD40/SCD41 too; they are not evidence that SCD43 hardware is defective |
-| Candidate software | 20 focused compatibility tests and eight registry scenarios pass locally | Simulated I2C replies, time and failures; no measured ppm or device stability data |
+| Candidate software | 41 focused compatibility tests and eight registry scenarios pass locally | Simulated I2C replies, time and failures; no measured ppm or device stability data |
 | Unit A / Unit B | **NOT TESTED / NOT TESTED** | Physical evidence is required before any support or product claim |
 
 Source provenance and hashes are in [tests/fixtures/README.md](../tests/fixtures/README.md).
-The production dependency lock and all vendor `.mpy` files are unchanged.
+The candidate dependency lock pins official SCD4X 1.4.13. Only that vendor `.mpy`
+changes; the runtime and other libraries retain their pins. See the
+[long-term driver and migration strategy](scd4x-driver-strategy.md).
 
 ## Command and capability comparison
 
@@ -59,7 +61,7 @@ Main therefore labels an SCD43 (and an SCD40) as SCD41 with this driver.
 
 | Area | Main behavior | Candidate behavior |
 |---|---|---|
-| Identity | Infers SCD41 from a method's existence | Uses the public variant property if available; otherwise sends the documented command using the locked driver's transport and CRC check |
+| Identity | Infers SCD41 from a method's existence | Uses the public variant property if available; otherwise sends the documented command using the legacy driver's transport and CRC check |
 | Identity unavailable | Guesses a model | Keeps `SCD4x`; valid serial and periodic start still required. Unknown nibble, NACK and bad CRC never produce an SCD43 claim |
 | Low power | Checks/calls nonexistent `start_low_power_periodic_measurement` | Calls `start_low_periodic_measurement`; supports all three variants |
 | Recovery | Calls nonexistent `soft_reset`; the generic wrapper suppresses the error | Uses `reinit`, waits conservatively, restores settings applied through the adapter, restarts the requested mode; failure propagates |
@@ -67,9 +69,11 @@ Main therefore labels an SCD43 (and an SCD40) as SCD41 with this driver.
 | FRC failure | Pinned driver unpacks signed data but compares against unsigned `0xFFFF`; failure can look successful | Checks the raw failure sentinel for the legacy `None` return; accepts valid signed corrections from newer APIs |
 | FRC restart | Vendor method leaves measurements stopped | Resumes the previous mode after success or failure; failed restart returns failure |
 
-The two uses of vendor private internals (legacy variant query and legacy FRC
-reply check) are deliberate, scoped to the locked driver's behavior and covered
-by tests. A future bundle update must rerun these tests and hardware checks.
+The normal 1.4.13 path uses public vendor APIs. Two private-internal fallbacks
+(variant query and FRC reply check) remain solely for devices still on 1.4.11,
+because application-only OTA does not install libraries. Both paths are tested.
+Retire the fallback after an enforced library migration; see the strategy above.
+Future dependency updates must rerun the software and physical checks.
 No factory reset or automatic EEPROM persistence is added.
 
 Remaining limits: the shared settings API still treats altitude/pressure `0` as
