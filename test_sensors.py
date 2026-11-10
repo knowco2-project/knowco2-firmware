@@ -6,16 +6,16 @@ import types
 calls = []
 
 class FakeSCD4X:
-    def __init__(self, i2c, present=True, is41=True):
+    def __init__(self, i2c, present=True, variant=1):
         if not present:
             raise OSError("no device on bus")
         self._present = present
-        self._is41 = is41
+        self.sensor_variant = variant
         self.self_calibration_enabled = True
         self.altitude = 0
         self._co2 = 612
-        if is41:
-            self.measure_single_shot = lambda: None  # marks it as SCD41
+        # The real driver exposes this method on ALL parts; it is not identity.
+        self.measure_single_shot = lambda: None
     @property
     def serial_number(self):
         return (0x12, 0xAB, 0x34, 0xCD, 0x56, 0x78)
@@ -28,11 +28,16 @@ class FakeSCD4X:
     @property
     def relative_humidity(self): return 41.0
     def start_periodic_measurement(self): calls.append("4x.start_normal")
-    def start_low_power_periodic_measurement(self): calls.append("4x.start_lp")
+    def start_low_periodic_measurement(self): calls.append("4x.start_lp")
     def stop_periodic_measurement(self): calls.append("4x.stop")
-    def soft_reset(self): calls.append("4x.soft_reset")
+    def reinit(self):
+        self.stop_periodic_measurement()
+        calls.append("4x.reinit")
     def set_ambient_pressure(self, hpa): calls.append(("4x.set_ap", hpa))
-    def force_calibration(self, ppm): calls.append(("4x.force_cal", ppm))
+    def force_calibration(self, ppm):
+        self.stop_periodic_measurement()
+        calls.append(("4x.force_cal", ppm))
+        return 0  # newer driver returns signed correction, including zero
 
 class FakeSCD30:
     def __init__(self, i2c, present=True):
@@ -55,10 +60,10 @@ class FakeSCD30:
     def reset(self): calls.append("30.reset")
 
 # scenario flags
-SCENARIO = {"scd4x_present": True, "is41": True, "scd30_present": True}
+SCENARIO = {"scd4x_present": True, "variant": 1, "scd30_present": True}
 
 m4x = types.ModuleType("adafruit_scd4x")
-m4x.SCD4X = lambda i2c: FakeSCD4X(i2c, present=SCENARIO["scd4x_present"], is41=SCENARIO["is41"])
+m4x.SCD4X = lambda i2c: FakeSCD4X(i2c, present=SCENARIO["scd4x_present"], variant=SCENARIO["variant"])
 m30 = types.ModuleType("adafruit_scd30")
 m30.SCD30 = lambda i2c: FakeSCD30(i2c, present=SCENARIO["scd30_present"])
 sys.modules["adafruit_scd4x"] = m4x
@@ -76,7 +81,7 @@ def reload_pkg():
 I2C = object()  # placeholder bus
 
 print("=== Test 1: SCD41 present (preferred over SCD30) ===")
-SCENARIO.update(scd4x_present=True, is41=True, scd30_present=True)
+SCENARIO.update(scd4x_present=True, variant=1, scd30_present=True)
 sensors = reload_pkg(); calls.clear()
 s = sensors.detect_sensor(I2C)
 assert s is not None and s.model == "SCD41", s.model
@@ -101,7 +106,7 @@ print("  lp period:", 30.0, "normal period:", 5.0, "calls ok")
 print("=== Test 3: recover() sequence (SCD41, low_power=True) ===")
 calls.clear()
 s.recover(low_power=True)
-assert calls == ["4x.stop", "4x.soft_reset", "4x.start_lp"], calls
+assert calls == ["4x.stop", "4x.reinit", "4x.start_lp"], calls
 print("  recover calls:", calls)
 
 print("=== Test 4: calibration/compensation dispatch ===")
@@ -113,18 +118,18 @@ assert ("4x.set_ap", 1013) in calls
 assert ("4x.force_cal", 420) in calls and ok is True
 print("  asc/alt/pressure/force_cal dispatched ok; force_cal ->", ok)
 
-print("=== Test 5: SCD40 (no low power) ===")
-SCENARIO.update(scd4x_present=True, is41=False, scd30_present=True)
+print("=== Test 5: SCD40 also supports low-power periodic mode ===")
+SCENARIO.update(scd4x_present=True, variant=0, scd30_present=True)
 sensors = reload_pkg(); calls.clear()
 s = sensors.detect_sensor(I2C)
-assert s.model == "SCD40" and s.supports_low_power is False, (s.model, s.supports_low_power)
+assert s.model == "SCD40" and s.supports_low_power is True, (s.model, s.supports_low_power)
 calls.clear()
-period = s.set_low_power(True)   # requested LP but unsupported -> falls back to normal
-assert period == 5.0 and calls == ["4x.stop", "4x.start_normal"], (period, calls)
-print("  SCD40 lp request fell back to normal 5s; calls:", calls)
+period = s.set_low_power(True)
+assert period == 30.0 and calls == ["4x.stop", "4x.start_lp"], (period, calls)
+print("  SCD40 low-power 30s; calls:", calls)
 
 print("=== Test 6: fall back to SCD30 when no SCD4x ===")
-SCENARIO.update(scd4x_present=False, is41=True, scd30_present=True)
+SCENARIO.update(scd4x_present=False, variant=1, scd30_present=True)
 sensors = reload_pkg(); calls.clear()
 s = sensors.detect_sensor(I2C)
 assert s.model == "SCD30", s.model
@@ -135,10 +140,21 @@ assert ok is True and s.device.forced_recalibration_reference == 415
 print("  model:", s.model, "serial:", s.read_serial(), "force_cal ok:", ok)
 
 print("=== Test 7: no sensor at all ===")
-SCENARIO.update(scd4x_present=False, is41=True, scd30_present=False)
+SCENARIO.update(scd4x_present=False, variant=1, scd30_present=False)
 sensors = reload_pkg()
 s = sensors.detect_sensor(I2C)
 assert s is None
 print("  detect_sensor returned None as expected")
+
+print("=== Test 8: SCD43 is identified explicitly through the registry ===")
+SCENARIO.update(scd4x_present=True, variant=5, scd30_present=True)
+sensors = reload_pkg(); calls.clear()
+s = sensors.detect_sensor(I2C)
+assert s.model == "SCD43" and s.supports_low_power is True
+assert s.read_serial() == "12AB34CD5678"
+assert s.data_ready and s.read() == (612, 22.5, 41.0)
+assert s.set_low_power(True) == 30.0
+s.recover(low_power=True)
+assert s.force_calibration(420) is True
 
 print("\nALL SENSOR-LAYER TESTS PASSED")
