@@ -1,6 +1,6 @@
 # knowco2/buttons.py
 # ----------------------------------------------------------------------
-# Button input that never drops a press (RC-52).
+# Queued button input with fail-closed overflow handling (RC-52).
 #
 # WHY THIS EXISTS
 # ---------------
@@ -173,7 +173,8 @@ class Buttons:
       C short / C hold (D2_HOLD)               A+B hold (OTA unlock)
 
     Differences from RC-51 (all in the user's favour):
-      * Presses made while the main loop is blocked are queued, not lost.
+      * Presses during a blocked loop are queued within bounded capacity.
+        On overflow, ambiguous gestures are discarded; fresh presses are required.
       * Holds are measured from event timestamps, so a hold completed while
         blocked is still a hold.
       * B fires on *press* (not release) when `b_fire_on_press()` says it is
@@ -212,6 +213,17 @@ class Buttons:
         try:
             if self._src.overflowed():
                 self.dropped += 1
+                # The event source has discarded both queues, so releases may
+                # be missing. Abandon all incomplete/pending gestures instead
+                # of allowing stale down-state to mature into an OTA unlock.
+                # A fresh press is required after overflow (fail closed).
+                self.down = [False, False, False]
+                self._press_ts = [None, None, None]
+                self._consumed = [False, False, False]
+                self._ab_start = None
+                self._ab_fired = False
+                self._actions = []
+                return
             for key, pressed, ts in self._src.events():
                 self.last_event_ms = ts
                 if pressed:
@@ -267,6 +279,14 @@ class Buttons:
                 self._actions.append(B_SHORT)
 
     def _on_release(self, key, ts):
+        # A full A+B hold may have started AND ended while Python was blocked.
+        # Evaluate the overlap at its first release, before clearing combo
+        # state; polling-time hold detection alone cannot see that gesture.
+        if (key in (A, B) and self.down[A] and self.down[B]
+                and self._ab_start is not None and not self._ab_fired
+                and _ticks_diff(ts, self._ab_start) >= self._ab_hold_ms):
+            self._ab_fired = True
+            self._actions.append(AB_HOLD)
         self.down[key] = False
         start = self._press_ts[key]
         self._press_ts[key] = None
