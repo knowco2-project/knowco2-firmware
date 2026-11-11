@@ -139,6 +139,10 @@ class ProductNamingTests(unittest.TestCase):
             "tests/test_buttons.py",
             "tests/test_boot_security.py",
             "tests/test_product_naming.py",
+            # Exact low-level model and engineering specification only. Do not
+            # exempt tests/ or docs/ broadly; customer-facing checks stay strict.
+            "tests/virtual_device/model.py",
+            "docs/testing/virtual-device-acceptance.md",
         }
         offenders = []
         for path in REPO_ROOT.rglob("*"):
