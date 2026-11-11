@@ -17,12 +17,16 @@ concurrency:
 jobs:
   behavioral-tests:
     name: Behavioral tests
+    # Fork code must be reviewed/promoted before using our AWS service role.
+    # This is defense in depth, not a substitute for AWS webhook/IAM isolation.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: codebuild-knowco2-firmware-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -49,6 +53,7 @@ jobs:
           python3 test_snappy_ui.py
           python3 test_graph_perf.py
           python3 test_buttons.py
+          python3 ../test_sensors.py
           python3 test_web_onboarding.py
           python3 -m unittest test_api_v1_contract.py
           python3 test_provisioning.py
@@ -58,12 +63,40 @@ jobs:
           python3 test_boot_security.py
           python3 test_usb_api.py
 
+      - name: Replay virtual input scenarios
+        id: virtual-input
+        timeout-minutes: 5
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          test "${CODEBUILD_BUILD_ID:-}" != ""
+          python3 tests/virtual_device/run.py --workers 4 --output test-results/virtual-input/report.json
+
+      - name: Validate virtual input model and regression oracles
+        if: ${{ !cancelled() && steps.virtual-input.outcome != 'skipped' }}
+        timeout-minutes: 5
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -s tests/virtual_device -p 'test_*.py' -v
+
+      - name: Retain virtual input evidence
+        if: ${{ !cancelled() && steps.virtual-input.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: virtual-input-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/virtual-input/report.json
+          if-no-files-found: error
+          retention-days: 7
+
   ota-staged-install:
     name: OTA staged install
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: codebuild-knowco2-firmware-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
