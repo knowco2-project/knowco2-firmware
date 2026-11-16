@@ -1,8 +1,7 @@
-"""Temporary integration construction. Never updates refs or releases.
+"""Temporary integration construction; never updates remote refs or releases.
 
-Build the exact locally tested tree from immutable repository inputs. The
-separate upload mode only POSTs Git blobs/trees after the full tree hash matches.
-This script is removed from the resulting product tree.
+Only immutable Git objects are uploaded after matching the locally tested tree.
+The construction controls are excluded from the final product tree.
 """
 from pathlib import Path
 from zipfile import ZipFile
@@ -25,11 +24,9 @@ INPUTS = {
     'pr24': 'e0691b809d55c2dced8d9906525035f9cddd5e3f',
     'pr25': '6b8826b430752c23ce4d3888d157a34cf290b606',
 }
-OVERLAYS = (
-    '.github/CODEOWNERS', 'docs/releases/1.0.0-gates.json',
+OVERLAYS = ('.github/CODEOWNERS', 'docs/releases/1.0.0-gates.json',
     'docs/releases/1.0.0-readiness.md', 'tools/release_gate.py',
-    'tests/test_release_gate.py', 'tests/test_ota_preservation.py',
-)
+    'tests/test_release_gate.py', 'tests/test_ota_preservation.py')
 SOURCE = Path(__file__).resolve().parents[1]
 ROOT = Path(os.environ['RUNNER_TEMP']) / 'knowco2-integration-objects'
 RESULT = SOURCE / 'integration-object-result'
@@ -39,35 +36,37 @@ def git(root, *args):
     return subprocess.check_output(['git', '-C', str(root), *args])
 
 
-def prepare():
+def guard():
     if os.environ.get('GITHUB_REPOSITORY') != REPOSITORY:
         raise RuntimeError('Wrong repository')
     if os.environ.get('GITHUB_REF') != 'refs/heads/integration/firmware-1.0.0':
         raise RuntimeError('Wrong integration branch')
     if not os.environ.get('CODEBUILD_BUILD_ID'):
         raise RuntimeError('CodeBuild required')
+
+
+def prepare():
+    guard()
     if ROOT.exists():
         raise RuntimeError('Refusing to overwrite an existing construction directory')
     ROOT.mkdir()
     for name, sha in INPUTS.items():
         if git(SOURCE, 'rev-parse', sha+'^{commit}').decode().strip() != sha:
             raise RuntimeError('Pinned commit missing: '+name)
-        data = git(SOURCE, 'archive', '--format=zip', sha)
-        target = ROOT / name
-        with ZipFile(io.BytesIO(data)) as archive:
+        target = ROOT/name
+        with ZipFile(io.BytesIO(git(SOURCE, 'archive', '--format=zip', sha))) as archive:
             for info in archive.infolist():
                 relative = Path(info.filename)
                 if relative.is_absolute() or '..' in relative.parts:
                     raise RuntimeError('Unsafe archive path')
                 archive.extract(info, target)
-                path = target / relative
+                path = target/relative
                 if path.is_file():
                     path.chmod((info.external_attr >> 16) & 0o777 or 0o644)
-    base = ROOT / 'main'
-    work = ROOT / 'combined'
+    base, work = ROOT/'main', ROOT/'combined'
     shutil.copytree(base, work)
     for name in ('pr22', 'pr23', 'pr24', 'pr25'):
-        incoming = ROOT / name
+        incoming = ROOT/name
         paths = {p.relative_to(base) for p in base.rglob('*') if p.is_file()}
         paths |= {p.relative_to(incoming) for p in incoming.rglob('*') if p.is_file()}
         for relative in sorted(paths):
@@ -104,6 +103,9 @@ def prepare():
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SOURCE/relative, destination)
     git(work, 'init', '-q')
+    # Read the original immutable objects for comparison, without copying tokens
+    # or altering any original repository ref.
+    (work/'.git/objects/info/alternates').write_text(str(SOURCE/'.git/objects')+'\n')
     git(work, 'add', '.')
     actual = git(work, 'write-tree').decode().strip()
     RESULT.mkdir(exist_ok=True)
@@ -112,7 +114,7 @@ def prepare():
     print('Constructed tree:', actual)
     if actual != EXPECTED_TREE:
         raise RuntimeError('Tree differs from locally tested candidate; no Git objects uploaded')
-    git(work, 'diff', '--cached', '--check')
+    git(work, 'diff', '--cached', '--check', INPUTS['main'])
     (RESULT/'verified-tree.json').write_text(json.dumps({'tree': actual, 'inputs': INPUTS, 'control_commit': os.environ['GITHUB_SHA'], 'ref_updated': False}, indent=2)+'\n')
 
 
@@ -122,11 +124,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def upload():
+    guard()
     work = ROOT/'combined'
     if git(work, 'write-tree').decode().strip() != EXPECTED_TREE:
         raise RuntimeError('Tree mismatch before upload')
-    if os.environ.get('GITHUB_REPOSITORY') != REPOSITORY or os.environ.get('GITHUB_REF') != 'refs/heads/integration/firmware-1.0.0':
-        raise RuntimeError('Wrong repository/ref')
     token = os.environ['GITHUB_TOKEN']
     opener = urllib.request.build_opener(NoRedirect())
     seen = set()
@@ -136,8 +137,7 @@ def upload():
         request = urllib.request.Request('https://api.github.com/repos/'+REPOSITORY+'/git/'+kind,
             data=json.dumps(payload).encode(), method='POST', headers={
                 'Authorization': 'Bearer '+token, 'Accept': 'application/vnd.github+json',
-                'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28',
-            })
+                'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28'})
         with opener.open(request, timeout=30) as response:
             result=json.load(response)
         if result.get('sha') != expected:
