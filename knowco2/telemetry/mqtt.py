@@ -121,6 +121,22 @@ def publish_to_mqtt():
     if not topics:
         return False
     publish_mqtt_discovery()
+    # Optional energy diagnostic follows CO2; same connection and cadence.
+    # No new discovery payloads, gauge reads, flash writes or TLS sessions.
+    monitor = getattr(state, "energy_monitor", None)
+    if monitor is not None:
+        try:
+            payload = json.dumps(monitor.snapshot())
+            if len(payload) > 1024:
+                raise ValueError("energy payload exceeded its budget")
+            uid = (state.hwid_hex or "unknown").lower()
+            topics.append(("%s/%s/energy" % (prefix, uid), payload, False))
+        except Exception as exc:
+            state.energy_monitor = None
+            try:
+                log("energy", "Energy telemetry disabled:", exc, min_interval=60.0)
+            except Exception:
+                pass
     ok = _publish_one(broker, port, user, password, topics, use_ssl=use_ssl)
     if ok:
         log("mqtt", "MQTT published to", broker, min_interval=30.0)

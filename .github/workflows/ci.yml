@@ -55,6 +55,8 @@ jobs:
           python3 test_product_naming.py
           python3 test_i18n.py
           python3 test_mqtt_tls.py
+          python3 test_energy.py
+          python3 test_energy_mqtt.py
           python3 test_boot_security.py
           python3 test_usb_api.py
 
