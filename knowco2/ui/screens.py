@@ -142,6 +142,51 @@ def compute_trend_arrow():
     else:
         return "→"
 
+def _fit_label_in_box(lbl, left, top, right, bottom, max_scale):
+    """Fit existing glyphs, not a character-count guess, in a pixel rectangle.
+
+    Adafruit Label.bounding_box is unscaled and includes glyph bearings.
+    Fitting both dimensions also bounds short numbers in Big CO2 mode.
+    No display objects, fonts or bitmaps are allocated here.
+    """
+    _, _, width, height = lbl.bounding_box
+    scale = max(1, min(max_scale, (right - left) // max(1, width),
+                       (bottom - top) // max(1, height)))
+    if lbl.scale != scale:
+        lbl.scale = scale
+    position = ((left + right) // 2, (top + bottom) // 2)
+    if lbl.anchored_position != position:
+        lbl.anchored_position = position
+
+
+def _layout_main_reading():
+    """Keep the two text views clear of the header and warning rows.
+
+    Reserve both footer rows even while hidden: code.py can show a battery
+    warning between sensor samples, and a warning must never cover a digit.
+    Stable reservation also avoids resizing the reading as warnings toggle.
+    Graph/AP-info/regulatory layouts are deliberately outside this change.
+    """
+    if state.screen != config.SCREEN_MAIN or state.display_mode not in (0, 1):
+        return
+    cx = W.display.width // 2
+    row_height = max(12, W.batt_warn_label.bounding_box[3],
+                     W.sensor_frozen_label.bounding_box[3])
+    sensor_bottom = W.display.height - 2
+    battery_bottom = sensor_bottom - row_height - 2
+    W.sensor_frozen_label.anchored_position = (cx, sensor_bottom)
+    W.batt_warn_label.anchored_position = (cx, battery_bottom)
+    top = 16  # scale-1 status / LP / TWC header plus clearance
+    bottom = battery_bottom - row_height - 2
+    left, right = 2, W.display.width - 2
+    if state.display_mode == 1:
+        _fit_label_in_box(W.co2_label, left, top, right, bottom, 16)
+    else:
+        split = top + (bottom - top) * 3 // 5
+        _fit_label_in_box(W.co2_label, left, top, right, split - 2, 3)
+        _fit_label_in_box(W.th_label, left, split + 2, right, bottom, 2)
+
+
 def refresh_text():
 
     if state.screen != config.SCREEN_MAIN:
@@ -167,11 +212,11 @@ def refresh_text():
     # (CO2-only sensors such as the Senseair Sunrise report rh = None).
     if state.last_co2 is None or state.last_temp_c is None:
         if state.display_mode in (0, 1):
-            W.co2_label.text = "CO2: ---- ppm"
-            W.co2_label.scale = 3
+            _set_text(W.co2_label, "----" if state.display_mode == 1 else "CO2: ---- ppm")
             W.ppm_label.hidden = True
             if state.display_mode == 0:
-                W.th_label.text = "--.-F  --.-%"
+                _set_text(W.th_label, "--.-F  --.-%")
+            _layout_main_reading()
         return
 
     co2 = state.last_co2
@@ -180,33 +225,19 @@ def refresh_text():
     t_f = t_c * 9 / 5 + 32
 
     if state.display_mode == 1:
-        # Big CO2 mode: number only, no units, maximum readable scale.
-        # terminalio.FONT is 6 px wide per character at scale=1.
-        # Scales chosen so the widest expected value (9999 = 4 chars) still fits
-        # the 240 px display with a small margin, and 5 digits (10000) still fits.
-        co2_str = "%d" % int(co2)
-        ndigits = len(co2_str)
-        if ndigits <= 2:
-            big_scale = 16   # 2 chars × 6 × 16 = 192 px wide
-        elif ndigits == 3:
-            big_scale = 12   # 3 chars × 6 × 12 = 216 px wide
-        elif ndigits == 4:
-            big_scale = 9    # 4 chars × 6 × 9  = 216 px wide
-        else:
-            big_scale = 7    # 5 chars × 6 × 7  = 210 px wide
-        W.co2_label.scale = big_scale
-        W.co2_label.text = co2_str
-        W.co2_label.anchored_position = (W.display.width // 2, W.display.height // 2)
+        # Keep the exact number; fit after updating text and measuring glyphs.
+        _set_text(W.co2_label, "%d" % int(co2))
         W.ppm_label.hidden = True
     elif state.display_mode == 0:
-        W.co2_label.text = "CO2: %d ppm" % int(co2)
+        _set_text(W.co2_label, "CO2: %d ppm" % int(co2))
 
     if state.display_mode == 0:
         rh_str = ("%.1f%%" % rh) if rh is not None else "--%"
         if state.temp_mode == "F":
-            W.th_label.text = "%.1fF  %s" % (t_f, rh_str)
+            _set_text(W.th_label, "%.1fF  %s" % (t_f, rh_str))
         else:
-            W.th_label.text = "%.1fC  %s" % (t_c, rh_str)
+            _set_text(W.th_label, "%.1fC  %s" % (t_c, rh_str))
+    _layout_main_reading()
 
 def build_wifi_qr_payload(ssid, pw):
     return "WIFI:T:WPA;S:%s;P:%s;;" % (ssid, pw)
@@ -488,6 +519,7 @@ def update_wifi_indicator():
 def update_visibility():
     main_visible = (state.screen == config.SCREEN_MAIN)
     ap_visible = (state.screen == config.SCREEN_APINFO)
+    show_graph = main_visible and (state.display_mode == 2)
 
     # Sensor frozen banner only appears on the main screen.
     W.sensor_frozen_label.hidden = not (main_visible and state.sensor_frozen_shown)
@@ -509,7 +541,6 @@ def update_visibility():
 
     W.th_label.hidden = not main_visible
 
-    show_graph = main_visible and (state.display_mode == 2)
     W.graph.hidden = not show_graph
     W.y_min_label.hidden = not show_graph
     W.y_max_label.hidden = not show_graph
@@ -529,13 +560,12 @@ def update_visibility():
 
     if main_visible:
         if state.display_mode == 0:
-            W.co2_label.scale = 3
-            # Restore the position that big-CO2 mode may have overwritten.
-            W.co2_label.anchored_position = (W.display.width // 2, W.display.height // 2 - 22)
             W.th_label.hidden = False
         elif state.display_mode == 1:
             # Scale and position are set dynamically in refresh_text().
             W.th_label.hidden = True
+        # Do not restore scale=3 over an already fitted five-digit reading.
+        _layout_main_reading()
     W.ppm_label.hidden = True  # never shown; kept in group for future use
 
     W.ap_ssid_label.hidden = not ap_visible
