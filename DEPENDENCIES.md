@@ -53,6 +53,35 @@ Do not replace the bundle simply because a newer date exists. Update when a
 relevant fix or feature justifies the qualification work, or as part of a
 planned dependency maintenance cycle.
 
+## Targeted upstream component updates
+
+The bundle tag and archive hashes identify the **base** library set. A reviewed
+individual upstream release can replace one inventoried module through
+`library_bundle.component_overrides`. This avoids upgrading unrelated drivers
+to obtain a sensor-specific fix. The vendored tree hash and `library_set_id`
+always identify the complete, effective library set, including overrides.
+
+Each override records its upstream repository, exact release/version and commit,
+source and CircuitPython-major-specific MPY release assets with SHA-256 hashes,
+the installed MPY hash, and a checked-in source fixture with its hash. Verify
+both downloaded archives against those hashes before extracting the named
+files. Keep upstream files unmodified and retain their license. The verifier
+checks the effective tree, MPY ABI, source/binary hashes and version; both release
+manifests carry the override provenance. No network or package resolver is needed
+to verify a checkout.
+
+Current candidate: `adafruit_scd4x` **1.4.13**, replacing only the SCD4X component
+from base bundle `20260520`. The approval state is **candidate**, pending physical
+qualification. CircuitPython and all other library files retain their existing
+pins. See [SCD4X driver strategy](docs/scd4x-driver-strategy.md).
+
+Complete/dev images copy this effective snapshot. The current OTA workflow does
+not include `lib/`, so application-only OTA does not upgrade SCD4X. Keep the
+tested 1.4.11 compatibility path until installed devices have been migrated via
+an approved complete/service library update. Do not remove it based only on a
+new repository pin. The signed test path in PR #22 binds the exact library set
+and needs a rebuilt, requalified bootstrap after integrating this change.
+
 ## Release metadata
 
 The companion release-integration change generates two machine-readable files:

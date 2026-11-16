@@ -2,10 +2,10 @@
   "schema": "knowco2.firmware.dependencies.v1",
   "hardware_profile": "KC2-01",
   "approval": {
-    "state": "current-production-baseline",
+    "state": "candidate-hardware-qualification-required",
     "automatic_updates": false,
     "requires_hardware_requalification_on_change": true,
-    "notes": "This lock records the dependency tuple already used by the current firmware release process. A newer CircuitPython or Adafruit bundle must be proposed and qualified before this file changes."
+    "notes": "Candidate tuple: existing CircuitPython 10.2.1 and bundle 20260520 with the explicitly locked upstream SCD4X 1.4.13 component override. Requires SCD40/SCD41 regression and two-unit SCD43 hardware qualification before production approval. No automatic installation or release."
   },
   "board": {
     "id": "adafruit_feather_esp32s3_reverse_tft",
@@ -34,8 +34,8 @@
       "sha256": "56725e8ce185291f66358ea34661d9f34aa2773dab8d6b79d96e4a79ff2ba966"
     },
     "vendored_path": "lib-2026-05-20-release",
-    "vendored_git_tree_sha": "3a88e2948952a8f80d2da6cf5b42854755a8ed3f",
-    "library_set_id": "cp10.2.1-bundle20260520-3a88e2948952",
+    "vendored_git_tree_sha": "0d96c38d9b1404c1cd19ca483f2f4fbad451df13",
+    "library_set_id": "cp10.2.1-bundle20260520-0d96c38d9b14",
     "expected_top_level": [
       "adafruit_connection_manager.mpy",
       "adafruit_display_text",
@@ -52,7 +52,29 @@
       "adafruit_stcc4.mpy",
       "adafruit_ticks.mpy"
     ],
-    "release_commit": "258a344fa879a2aace636956fed52e1148b4176b"
+    "release_commit": "258a344fa879a2aace636956fed52e1148b4176b",
+    "component_overrides": [
+      {
+        "module": "adafruit_scd4x",
+        "version": "1.4.13",
+        "source_repository": "https://github.com/adafruit/Adafruit_CircuitPython_SCD4X",
+        "source_commit": "2c62569382663b42d79f1780ee647895c58dbc6e",
+        "source_path": "tests/fixtures/adafruit_scd4x_1_4_13.py",
+        "source_sha256": "711c28250f95a1ae569c9c30a89f33ea31c6c3878c3b106ce48b6e346dad4c7f",
+        "path": "adafruit_scd4x.mpy",
+        "sha256": "5a546ae7ac4c78b9d9a31eddce3e8a5ee016999a6a445e9de1fdbd8ac222315f",
+        "source_asset": {
+          "filename": "adafruit-circuitpython-scd4x-py-1.4.13.zip",
+          "url": "https://github.com/adafruit/Adafruit_CircuitPython_SCD4X/releases/download/1.4.13/adafruit-circuitpython-scd4x-py-1.4.13.zip",
+          "sha256": "bd70d18259b59e1bd3954a92bf2bbbf8ab73474b89987e0a239ce15b76145704"
+        },
+        "precompiled_asset": {
+          "filename": "adafruit-circuitpython-scd4x-10.x-mpy-1.4.13.zip",
+          "url": "https://github.com/adafruit/Adafruit_CircuitPython_SCD4X/releases/download/1.4.13/adafruit-circuitpython-scd4x-10.x-mpy-1.4.13.zip",
+          "sha256": "ef9b48fa8b381387572f394ab43f5a63a2d990a227463cd92e0427c765c00644"
+        }
+      }
+    ]
   },
   "mpy_cross": {
     "version": "10.2.1",

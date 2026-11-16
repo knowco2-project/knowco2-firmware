@@ -1,240 +1,27 @@
-name: Build and Release KnowCO2 Firmware
+name: Release readiness gate (publication disabled)
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    tags: ["v*.*.*"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag (e.g. v1.0.0)"
-        required: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build-release:
-    runs-on:
-      - codebuild-knowco2-firmware-${{ github.run_id }}-${{ github.run_attempt }}
-
+  release-readiness:
+    runs-on: codebuild-knowco2-firmware-${{ github.run_id }}-${{ github.run_attempt }}
+    timeout-minutes: 10
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-
-      - name: Verify release licensing files
+      - name: Enforce unresolved 1.0.0 release gates
+        run: python3 tools/release_gate.py --enforce
+      - name: No production publishing implementation is approved
         run: |
-          test -s LICENSE
-          test -s THIRD_PARTY_NOTICES.md
-          test -s LICENSES/CIRCUITPYTHON-10.2.1.txt
-
-      - name: Verify and export locked firmware dependencies
-        run: |
-          python3 tools/firmware_dependencies.py verify
-          python3 tools/firmware_dependencies.py github-env --output "$GITHUB_ENV"
-
-      - name: Get version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.tag }}"
-          else
-            VERSION="${GITHUB_REF#refs/tags/}"
-          fi
-          if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z._-]*$'; then
-            echo "::error::Release version must look like v1.2.3"
-            exit 1
-          fi
-          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Building release: $VERSION"
-
-      - name: Compile all firmware modules
-        run: python3 -m py_compile $(find . -name "*.py" -not -path "./tests/*" -not -path "./.git/*")
-
-      - name: Remove __pycache__ created by the compile gate
-        run: find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-
-      - name: Run behavioral test suites
-        working-directory: tests
-        run: |
-          python3 test_firmware_dependencies.py
-          python3 test_cloud_heal.py
-          python3 test_snappy_ui.py
-          python3 test_graph_perf.py
-          python3 test_buttons.py
-          python3 test_web_onboarding.py
-          python3 test_product_naming.py
-
-      - name: Verify version.py was bumped for this release
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          if ! grep -q "FIRMWARE_VERSION" knowco2/version.py; then
-            echo "::error::knowco2/version.py missing FIRMWARE_VERSION"
-            exit 1
-          fi
-          PREV=$(git tag --sort=-creatordate | grep -v "^${VERSION}$" | head -1 || true)
-          if [ -n "$PREV" ] && git diff --quiet "$PREV" HEAD -- knowco2/version.py; then
-            echo "::error::knowco2/version.py unchanged since $PREV — bump FIRMWARE_VERSION before tagging $VERSION"
-            exit 1
-          fi
-          echo "version.py check passed"
-
-      - name: Get firmware version string
-        id: fw_version
-        run: |
-          FW_VER=$(python3 - <<'PY'
-          import re
-          content = open("knowco2/version.py", encoding="utf-8").read()
-          match = re.search(r"FIRMWARE_VERSION\s*=\s*[\"'](.*?)[\"']", content)
-          print(match.group(1) if match else "unknown")
-          PY
-          )
-          echo "FW_VER=$FW_VER" >> "$GITHUB_OUTPUT"
-          echo "Firmware version string: $FW_VER"
-
-      - name: Generate release dependency manifests
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          FW_VER="${{ steps.fw_version.outputs.FW_VER }}"
-          python3 tools/firmware_dependencies.py compatibility \
-            --release-tag "$VERSION" \
-            --output "knowco2-compatibility-${VERSION}.json"
-          python3 tools/firmware_dependencies.py build-manifest \
-            --release-tag "$VERSION" \
-            --firmware-version "$FW_VER" \
-            --output "knowco2-build-${VERSION}.json"
-
-      - name: Build locked CircuitPython mpy-cross
-        run: |
-          set -euo pipefail
-          BUILD_ROOT="${RUNNER_TEMP:-/tmp}/knowco2-mpy-cross-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          CP_SOURCE="$BUILD_ROOT/circuitpython"
-          rm -rf "$BUILD_ROOT"
-          mkdir -p "$CP_SOURCE"
-
-          git -C "$CP_SOURCE" init -q
-          git -C "$CP_SOURCE" remote add origin "$KNOWCO2_MPY_CROSS_SOURCE_REPOSITORY"
-          git -C "$CP_SOURCE" fetch --depth 1 origin "$KNOWCO2_MPY_CROSS_SOURCE_COMMIT"
-          git -C "$CP_SOURCE" checkout --detach -q FETCH_HEAD
-          test "$(git -C "$CP_SOURCE" rev-parse HEAD)" = "$KNOWCO2_MPY_CROSS_SOURCE_COMMIT"
-
-          # CircuitPython's build system derives its version from git tags.
-          # A commit-only shallow fetch is insufficient and causes
-          # "Cannot determine version" in py/mpversion.mk/py.mk. Fetch the
-          # authoritative Adafruit tags before building while keeping the
-          # checked-out source commit pinned to the lock file.
-          git -C "$CP_SOURCE" fetch --force --tags origin '+refs/tags/*:refs/tags/*'
-
-          mkdir -p "$CP_SOURCE/tools/huffman"
-          git -C "$CP_SOURCE/tools/huffman" init -q
-          git -C "$CP_SOURCE/tools/huffman" remote add origin "$KNOWCO2_HUFFMAN_REPOSITORY"
-          git -C "$CP_SOURCE/tools/huffman" fetch --depth 1 origin "$KNOWCO2_HUFFMAN_COMMIT"
-          git -C "$CP_SOURCE/tools/huffman" checkout --detach -q FETCH_HEAD
-          test "$(git -C "$CP_SOURCE/tools/huffman" rev-parse HEAD)" = "$KNOWCO2_HUFFMAN_COMMIT"
-
-          make -C "$CP_SOURCE/mpy-cross" -j2
-          MPY_CROSS_BIN="$CP_SOURCE/mpy-cross/build/mpy-cross"
-          test -x "$MPY_CROSS_BIN"
-          "$MPY_CROSS_BIN" --version | tee "$BUILD_ROOT/mpy-cross-version.txt"
-          grep -F "$KNOWCO2_MPY_CROSS_VERSION" "$BUILD_ROOT/mpy-cross-version.txt"
-          echo "KNOWCO2_MPY_CROSS_BIN=$MPY_CROSS_BIN" >> "$GITHUB_ENV"
-
-      - name: Build OTA ZIP
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          STAGING="staging-ota"
-          rm -rf "$STAGING"
-          mkdir -p "$STAGING"
-
-          cp code.py boot.py "$STAGING/"
-          cp -r knowco2 "$STAGING/"
-          cp -r assets "$STAGING/"
-          mkdir -p "$STAGING/assets/legal"
-          cp LICENSE "$STAGING/assets/legal/LICENSE.txt"
-          cp THIRD_PARTY_NOTICES.md "$STAGING/assets/legal/THIRD_PARTY_NOTICES.md"
-          cp dependencies/firmware-build-lock.json "$STAGING/assets/legal/FIRMWARE_BUILD_LOCK.json"
-          cp "knowco2-build-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_BUILD_MANIFEST.json"
-          cp "knowco2-compatibility-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_COMPATIBILITY.json"
-
-          find "$STAGING" -type d -name "__pycache__" -prune -exec rm -rf {} +
-          find "$STAGING" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
-          python3 tools/validate_release_tree.py "$STAGING"
-
-          cd "$STAGING"
-          zip -r "../knowco2-ota-${VERSION}.zip" .
-          cd ..
-          unzip -l "knowco2-ota-${VERSION}.zip"
-
-      - name: Build Dev ZIP
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          STAGING="staging-dev"
-          rm -rf "$STAGING"
-          mkdir -p "$STAGING/lib"
-
-          cp code.py boot.py "$STAGING/"
-          cp -r knowco2 "$STAGING/"
-          cp -r assets "$STAGING/"
-          mkdir -p "$STAGING/assets/legal"
-          cp LICENSE "$STAGING/assets/legal/LICENSE.txt"
-          cp THIRD_PARTY_NOTICES.md "$STAGING/assets/legal/THIRD_PARTY_NOTICES.md"
-          cp dependencies/firmware-build-lock.json "$STAGING/assets/legal/FIRMWARE_BUILD_LOCK.json"
-          cp "knowco2-build-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_BUILD_MANIFEST.json"
-          cp "knowco2-compatibility-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_COMPATIBILITY.json"
-
-          echo "Using locked lib directory: $KNOWCO2_LIB_DIR"
-          cp -R "$KNOWCO2_LIB_DIR"/. "$STAGING/lib/"
-
-          find "$STAGING" -type d -name "__pycache__" -prune -exec rm -rf {} +
-          find "$STAGING" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
-          python3 tools/validate_release_tree.py "$STAGING"
-
-          cd "$STAGING"
-          zip -r "../knowco2-dev-${VERSION}.zip" .
-          cd ..
-
-      - name: Build Full ZIP
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          STAGING="staging-full"
-          rm -rf "$STAGING"
-          mkdir -p "$STAGING"
-
-          # build_device_image.py is the single source of truth for the device
-          # filesystem. Do not pre-copy the source package into STAGING: host
-          # Python tests may have recreated __pycache__ directories there.
-          python3 tools/build_device_image.py \
-            --source-root . \
-            --library-root "$KNOWCO2_LIB_DIR" \
-            --mpy-cross "$KNOWCO2_MPY_CROSS_BIN" \
-            --output-root "$STAGING"
-
-          mkdir -p "$STAGING/assets/legal"
-          cp LICENSE "$STAGING/assets/legal/LICENSE.txt"
-          cp THIRD_PARTY_NOTICES.md "$STAGING/assets/legal/THIRD_PARTY_NOTICES.md"
-          cp dependencies/firmware-build-lock.json "$STAGING/assets/legal/FIRMWARE_BUILD_LOCK.json"
-          cp "knowco2-build-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_BUILD_MANIFEST.json"
-          cp "knowco2-compatibility-${VERSION}.json" "$STAGING/assets/legal/FIRMWARE_COMPATIBILITY.json"
-          python3 tools/validate_release_tree.py "$STAGING"
-
-          cd "$STAGING"
-          zip -r "../knowco2-full-${VERSION}.zip" .
-          cd ..
-
-      - name: Upload release artifacts
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.VERSION }}
-          files: |
-            knowco2-ota-${{ steps.version.outputs.VERSION }}.zip
-            knowco2-dev-${{ steps.version.outputs.VERSION }}.zip
-            knowco2-full-${{ steps.version.outputs.VERSION }}.zip
-            knowco2-build-${{ steps.version.outputs.VERSION }}.json
-            knowco2-compatibility-${{ steps.version.outputs.VERSION }}.json
+          echo "Production signing, protected approval and exact-artifact qualification are required."
+          exit 1
