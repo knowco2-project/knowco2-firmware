@@ -219,7 +219,6 @@ def _identity_payload():
         "device_id": state.settings.get("device_id", "co2-node-1"),
         "hwid": state.hwid_hex,
         "board_id": state.board_id_str,
-        "pair_code": state.pair_code,
         "firmware_version": version.FIRMWARE_VERSION,
         "circuitpython_version": version.CP_VERSION,
         "sensor_model": state.sensor_model_str,
@@ -459,7 +458,9 @@ def _read_and_dispatch():
         if newline < 0:
             break
         line = bytes(_rx[:newline])
-        del _rx[:newline + 1]
+        # CircuitPython bytearray does not implement item/slice deletion.
+        # Empty slice assignment consumes the frame without rebinding _rx.
+        _rx[:newline + 1] = b""
         if len(line) > MAX_RX_LINE:
             _queue_event("protocol.error", _error(
                 "frame_too_large", "USB request exceeded maximum frame size"))
