@@ -1,0 +1,6 @@
+# Review ownership does not enforce branch protection by itself.
+* @goehlemichael
+/.github/ @goehlemichael
+/knowco2/ota* @goehlemichael
+/dependencies/ @goehlemichael
+/tools/sign_ota.py @goehlemichael

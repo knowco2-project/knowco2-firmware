@@ -1,0 +1,62 @@
+{
+  "schema": "knowco2.release-readiness.v1",
+  "target_version": "1.0.0",
+  "release_allowed": false,
+  "gates": {
+    "ota_power_loss_recovery": {
+      "status": "blocked",
+      "requirement": "Prove coherent old/new boot or automatic recovery after every persistent-operation interruption. Full staging alone is not rollback.",
+      "evidence": ""
+    },
+    "ota_first_boot_health": {
+      "status": "pending",
+      "requirement": "Confirm candidate health after reboot before retiring recovery state; bound failed boots without weakening antirollback.",
+      "evidence": ""
+    },
+    "customer_state_preservation": {
+      "status": "pending",
+      "requirement": "Pass populated-settings, identity and calibration comparisons after success/rejection/interruption AND physical reboot/reconnect tests.",
+      "evidence": ""
+    },
+    "production_signing": {
+      "status": "blocked",
+      "requirement": "Reviewed private-key custody, provisioning/rotation, signing and exact-artifact verification; no public fixture trust in customer images.",
+      "evidence": ""
+    },
+    "runtime_security_profile": {
+      "status": "blocked",
+      "requirement": "Reconcile the historical 10.2.1 lock with a security-reviewed target (10.3.2 removes compromised roots); pin exact UF2/compiler/CA evidence and qualify hardware.",
+      "evidence": ""
+    },
+    "flasher_profile_alignment": {
+      "status": "pending",
+      "requirement": "Prove the actual flasher runtime, source libraries and component override equal the signed bootstrap dependency identity. Catalog labels are not evidence.",
+      "evidence": ""
+    },
+    "real_upgrade_and_capacity": {
+      "status": "blocked",
+      "requirement": "Test distinct supported installed A to shipped B, including libraries, entrypoint format, source/MPY aliases and peak FAT allocation with protected user data.",
+      "evidence": ""
+    },
+    "upstream_security_review": {
+      "status": "pending",
+      "requirement": "Resolve high/critical advisories against exact ESP-IDF, TLS, runtime and dependency commits/configuration. No blanket no-vulnerabilities claim.",
+      "evidence": ""
+    },
+    "hardware_regression": {
+      "status": "pending",
+      "requirement": "Qualify integrated SCD41/button/USB behavior and each advertised additional sensor (including both SCD43 units) on the exact image.",
+      "evidence": ""
+    },
+    "wifi_cloud_soak": {
+      "status": "pending",
+      "requirement": "Verify real Wi-Fi reconnect, same cloud identity, credential retention, TLS rejection matrix, sensor/UI behavior and defined-duration soak.",
+      "evidence": ""
+    },
+    "repository_release_controls": {
+      "status": "pending",
+      "requirement": "Review branch/tag protection, required checks/review, production signing approval and rollback procedures. main currently reports unprotected.",
+      "evidence": ""
+    }
+  }
+}
