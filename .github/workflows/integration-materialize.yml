@@ -1,0 +1,43 @@
+name: Materialize reviewed integration tree
+
+on:
+  push:
+    branches: [integration/firmware-1.0.0]
+    paths:
+      - .github/workflows/integration-materialize.yml
+      - .integration-transfer/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-materialize-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  materialize:
+    if: github.repository == 'knowco2-project/knowco2-firmware' && github.ref == 'refs/heads/integration/firmware-1.0.0' && github.event_name != 'pull_request'
+    runs-on: codebuild-knowco2-firmware-${{ github.run_id }}-${{ github.run_attempt }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Construct immutable reviewed tree without executing candidate code
+        run: python3 .integration-transfer/materialize.py prepare
+      - name: Create hash-verified Git objects only (no ref/tag/release writes)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 .integration-transfer/materialize.py upload
+      - name: Retain construction evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: integration-tree-${{ github.run_id }}-${{ github.run_attempt }}
+          path: integration-object-result/
+          if-no-files-found: warn
+          retention-days: 7
