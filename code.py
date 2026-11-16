@@ -31,6 +31,26 @@ from knowco2.telemetry import cloud as cloud_mod, mqtt as mqtt_mod
 from knowco2 import web
 from knowco2.helpers import log
 
+# Optional observer: never controls sensing, storage, sleep or network policy.
+state.energy_monitor = None
+
+
+def _energy_observe(activity=None):
+    monitor = state.energy_monitor
+    if monitor is not None:
+        try:
+            if activity is None:
+                monitor.poll()
+            else:
+                monitor.transition(activity)
+        except Exception as exc:
+            # Disable for this boot rather than repeatedly failing in the CO2 loop.
+            state.energy_monitor = None
+            try:
+                log("energy", "Energy observer disabled:", exc, min_interval=60.0)
+            except Exception:
+                pass
+
 
 # ======================================================================
 #  STARTUP SPLASH (logo-only)  — shown before the main UI is built
@@ -122,12 +142,14 @@ print("buttons backend:", buttons.backend)
 def _busy(what, fn, *args):
     """Run a blocking call with the busy indicator up, then drain any button
     presses that arrived while we were away so they apply immediately."""
+    _energy_observe(what)
     runtime.show_busy(what)
     try:
         return fn(*args)
     finally:
         runtime.clear_busy()
         buttons.scan()
+        _energy_observe("idle")
 
 
 def mode_name():
@@ -140,6 +162,7 @@ def mode_name():
 def apply_energy_mode(active):
     """Enter/exit Low Power mode. The sensor-specific part goes through the
     driver's set_low_power(), which returns the effective sample period."""
+    _energy_observe("mode_change")
     state.energy_mode = active
     state.settings["energy_mode"] = active
     state._save_deferred_ts = time.monotonic() + 2.0
@@ -167,6 +190,7 @@ def apply_energy_mode(active):
     ui.show_status("LP Mode: ON - hold A to exit" if active else "LP Mode: OFF")
     print("Energy mode:", "ON" if active else "OFF",
           "| SCD period:", state._scd_period_effective, "s")
+    _energy_observe("idle")
 
 
 def _sensor_recover():
@@ -182,6 +206,7 @@ def _sensor_recover():
             pass
     if (now - state.last_scd_reset) < config.SCD_RESET_COOLDOWN_SEC:
         return
+    _energy_observe("sensor_recovery")
     state.last_scd_reset = now
     state.scd_crc_failures = 0
     state.scd_recoveries += 1
@@ -201,6 +226,7 @@ def _sensor_recover():
         except Exception:
             pass
         state.scd_recoveries = 0
+    _energy_observe("idle")
 
 
 def check_battery_boot():
@@ -314,6 +340,20 @@ else:
 if state.settings.get("energy_mode", False):
     apply_energy_mode(True)
 
+# Engineering opt-in only. No profile/observer imports in the default path.
+# Enable locally; no new remotely writable setting or calibration endpoint.
+if state.settings.get("energy_monitor_enabled") is True:
+    try:
+        import supervisor as _energy_supervisor
+        from knowco2.energy_monitor import Monitor as _EnergyMonitor
+        from knowco2.power_profile import PROFILE as _energy_profile
+        state.energy_monitor = _EnergyMonitor(
+            state, board, version, _energy_profile, _energy_supervisor.ticks_ms,
+            time, wifi.radio if wifi is not None else None)
+    except Exception as exc:
+        state.energy_monitor = None
+        log("energy", "Energy observer not started:", exc, min_interval=60.0)
+
 # ======================================================================
 #  MAIN LOOP  (orchestration)
 # ======================================================================
@@ -357,6 +397,7 @@ while True:
         except Exception:
             pass
     now = time.monotonic()
+    _energy_observe()
 
     # After RECOVERY_STABLE_UPTIME_S of healthy uptime, clear the safe-mode
     # retry counter so future faults get a fresh set of auto-recoveries.
@@ -456,7 +497,7 @@ while True:
                 state.screen = config.SCREEN_APINFO if state.screen == config.SCREEN_MAIN else config.SCREEN_MAIN
                 ui.update_visibility()
                 if state.screen == config.SCREEN_APINFO:
-                    state._qr_page = 0           # always start at page 0 (WiFi QR) when entering
+                    state._qr_page = 0           # always start at page 0 (WiFi QR)
                     # Switch the screen NOW (labels are cheap); the QR builds
                     # from the main loop a moment later (usually a cache hit).
                     ui.refresh_apinfo_screen()
@@ -712,6 +753,7 @@ while True:
 
     # Display dimming schedule (checks every 60 s, requires NTP)
     if (now - last_dim_check) >= 60.0:
+        _energy_observe("display_change")
         last_dim_check = now
         if state.settings.get("dim_enabled", False) and state.ntp_synced:
             try:
@@ -744,6 +786,8 @@ while True:
                     board.DISPLAY.brightness = 1.0
                 except Exception:
                     pass
+
+        _energy_observe("idle")
 
     # Memory maintenance + monitor (very low overhead)
     if (now - state.last_gc_ts) >= config.MEM_MONITOR_INTERVAL_S:

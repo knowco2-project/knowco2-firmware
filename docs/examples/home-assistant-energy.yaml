@@ -1,0 +1,76 @@
+# Experimental package: replace REPLACE_HWID and entity IDs with your unit.
+# Default 60 s MQTT cadence / 300 s low-power cadence: expire after 900 s.
+# Adjust expiration to > 2 x your actual longest publish interval.
+# This recipe intentionally accepts WALL-AC profiles only, not USB-DC estimates.
+# Check configuration before reloading. Not a replacement for the HACS integration.
+mqtt:
+  sensor:
+    - name: "KnowCO2 estimated wall power"
+      unique_id: "knowco2_REPLACE_HWID_experimental_wall_power"
+      state_topic: "knowco2/REPLACE_HWID/energy"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      expire_after: 900
+      value_template: >-
+        {{ value_json.power_mw_est / 1000
+           if value_json.power_mw_est is number else none }}
+      availability_topic: "knowco2/REPLACE_HWID/energy"
+      availability_template: >-
+        {{ 'online' if value_json.configured and value_json.boundary == 'wall_ac'
+           and value_json.power_mw_est is number else 'offline' }}
+    - name: "KnowCO2 estimated wall energy"
+      unique_id: "knowco2_REPLACE_HWID_experimental_wall_energy"
+      state_topic: "knowco2/REPLACE_HWID/energy"
+      unit_of_measurement: "kWh"
+      device_class: energy
+      # Explicit reset timestamp handles a new boot whose first reported total
+      # is GREATER than the old boot's last total. Do not use decrease-only reset.
+      state_class: total
+      last_reset_value_template: "{{ value_json.last_reset }}"
+      expire_after: 900
+      value_template: >-
+        {{ value_json.energy_mwh_est / 1000000
+           if value_json.energy_mwh_est is number else none }}
+      availability_topic: "knowco2/REPLACE_HWID/energy"
+      availability_template: >-
+        {{ 'online' if value_json.configured and value_json.boundary == 'wall_ac'
+           and value_json.energy_mwh_est is number and value_json.last_reset
+           and value_json.covered_s > 0 else 'offline' }}
+      json_attributes_topic: "knowco2/REPLACE_HWID/energy"
+      json_attributes_template: >-
+        {{ {'profile_id': value_json.profile_id, 'quality': value_json.quality,
+            'source_basis': value_json.source_basis,
+            'covered_s': value_json.covered_s,
+            'unmodeled_s': value_json.unmodeled_s,
+            'flags': value_json.flags} | to_json }}
+
+input_number:
+  knowco2_electricity_rate:
+    name: "KnowCO2 variable electricity rate"
+    min: 0
+    max: 5
+    step: 0.001
+    mode: box
+    unit_of_measurement: "USD/kWh"
+input_boolean:
+  knowco2_rate_confirmed:
+    name: "KnowCO2 electricity rate configured"
+    initial: false
+
+template:
+  - sensor:
+      - name: "KnowCO2 projected 30-day cost"
+        unique_id: "knowco2_REPLACE_HWID_experimental_projected_cost"
+        unit_of_measurement: "USD"
+        device_class: monetary
+        # Projection, not historical cost or a measurement-class statistic.
+        availability: >-
+          {{ is_state('input_boolean.knowco2_rate_confirmed', 'on')
+             and is_number(states('sensor.knowco2_estimated_wall_power'))
+             and is_number(states('input_number.knowco2_electricity_rate')) }}
+        state: >-
+          {% set watts = states('sensor.knowco2_estimated_wall_power') %}
+          {% set rate = states('input_number.knowco2_electricity_rate') %}
+          {{ ((watts | float) / 1000 * 24 * 30 * (rate | float)) | round(2)
+             if is_number(watts) and is_number(rate) else none }}
