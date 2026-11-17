@@ -18,6 +18,7 @@ import re
 import shlex
 import stat
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -37,6 +38,27 @@ SAFE_ENV_VALUE = re.compile(r"^[^\r\n]*$")
 
 class DependencyPolicyError(RuntimeError):
     """Raised when the locked firmware dependency policy is invalid."""
+
+
+def _is_github_api_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == "api.github.com"
+            and parsed.port in (None, 443)
+            and parsed.username is None
+            and parsed.password is None
+        )
+    except ValueError:
+        return False
+
+
+class _GitHubAPIOnlyRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # urllib otherwise forwards Authorization before geturl() can check it.
+        _require(_is_github_api_url(newurl), "dependency metadata redirected to an unapproved host")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -95,6 +117,46 @@ def calculated_library_set_id(lock: Mapping[str, Any]) -> str:
     return f"cp{cp_version}-bundle{tag}-{tree_sha[:12]}"
 
 
+def _validate_component_overrides(bundle: Mapping[str, Any]) -> None:
+    """A reviewed module release can replace one file in the base bundle."""
+    overrides = bundle.get("component_overrides", [])
+    _require(isinstance(overrides, list), "component_overrides must be a list")
+    seen = set()
+    for value in overrides:
+        item = _mapping(value, "component override")
+        module = _string(item.get("module"), "override.module")
+        _require(re.fullmatch(r"[a-z][a-z0-9_]*", module) is not None,
+                 "override.module must be a Python module name")
+        _require(module not in seen, "duplicate component override")
+        seen.add(module)
+        version = _string(item.get("version"), "override.version")
+        _version_tuple(version, "override.version")
+        path = _string(item.get("path"), "override.path")
+        _require(path == module + ".mpy" and path in bundle["expected_top_level"],
+                 "override.path must name its inventoried module MPY")
+        source = _safe_relative_path(_string(item.get("source_path"), "override.source_path"),
+                                     "override.source_path")
+        _require(source.suffix == ".py", "override.source_path must name Python source")
+        commit = _string(item.get("source_commit"), "override.source_commit")
+        _require(HEX_40.fullmatch(commit) is not None, "override.source_commit must be a Git SHA")
+        repository = _string(item.get("source_repository"), "override.source_repository")
+        _require(re.fullmatch(r"https://github.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+                 is not None, "override.source_repository must be an HTTPS GitHub repository")
+        for key in ("sha256", "source_sha256"):
+            _require(SHA256.fullmatch(_string(item.get(key), "override." + key)) is not None,
+                     "override." + key + " must be SHA-256")
+        for key in ("source_asset", "precompiled_asset"):
+            asset = _mapping(item.get(key), "override." + key)
+            filename = _string(asset.get("filename"), "override asset filename")
+            suffix = ("-py-" if key == "source_asset" else f"-{bundle['major']}.x-mpy-")
+            _require(Path(filename).name == filename and filename.endswith(suffix + version + ".zip"),
+                     "override asset filename must match version and CircuitPython major")
+            _require(asset.get("url") == repository + "/releases/download/" + version + "/" + filename,
+                     "override asset URL must match its pinned repository and release")
+            _require(SHA256.fullmatch(_string(asset.get("sha256"), "override asset sha256")) is not None,
+                     "override asset sha256 must be SHA-256")
+
+
 def validate_lock(lock: Mapping[str, Any]) -> None:
     _require(lock.get("schema") == LOCK_SCHEMA, f"schema must be {LOCK_SCHEMA}")
     _string(lock.get("hardware_profile"), "hardware_profile")
@@ -151,6 +213,7 @@ def validate_lock(lock: Mapping[str, Any]) -> None:
         digest = _string(asset.get("sha256"), f"library_bundle.{asset_name}.sha256")
         _require(url.scheme == "https" and url.path.endswith(filename), f"library_bundle.{asset_name}.url does not match its filename")
         _require(SHA256.fullmatch(digest) is not None, f"library_bundle.{asset_name}.sha256 must be lowercase SHA-256")
+    _validate_component_overrides(bundle)
     _require(
         _string(bundle.get("library_set_id"), "library_bundle.library_set_id") == calculated_library_set_id(lock),
         "library_bundle.library_set_id does not match the locked runtime, bundle, and vendored tree",
@@ -182,8 +245,8 @@ def validate_lock(lock: Mapping[str, Any]) -> None:
         _require("{release}" in template, f"release.{key} must contain {{release}}")
 
     monitor = _mapping(lock.get("monitor"), "monitor")
-    monitor_url = urllib.parse.urlparse(_string(monitor.get("release_api"), "monitor.release_api"))
-    _require(monitor_url.scheme == "https" and monitor_url.hostname == "api.github.com", "monitor.release_api must be the GitHub HTTPS API")
+    monitor_url = _string(monitor.get("release_api"), "monitor.release_api")
+    _require(_is_github_api_url(monitor_url), "monitor.release_api must be the GitHub HTTPS API")
     _string(monitor.get("issue_title"), "monitor.issue_title")
 
 
@@ -293,6 +356,20 @@ def verify_repository(repository: Path, lock: Mapping[str, Any]) -> list[str]:
     _require(not wrong_headers, "vendored .mpy ABI header mismatch: " + ", ".join(wrong_headers))
     messages.append(f"Vendored bundle {bundle['tag']}: {len(mpy_files)} .mpy files, tree {current_tree}")
 
+    for item in bundle.get("component_overrides", []):
+        source = repository / item["source_path"]
+        _require(source.is_file() and not source.is_symlink(), "override source is missing or a symlink")
+        _require(hashlib.sha256(source.read_bytes()).hexdigest() == item["source_sha256"],
+                 "override source SHA-256 mismatch: " + item["module"])
+        binary = lib_path / item["path"]
+        _require(hashlib.sha256(binary.read_bytes()).hexdigest() == item["sha256"],
+                 "override MPY SHA-256 mismatch: " + item["module"])
+        match = re.search(r'^__version__\s*=\s*[\"\']([^\"\']+)[\"\']',
+                          source.read_text(encoding="utf-8"), re.MULTILINE)
+        _require(match is not None and match.group(1) == item["version"],
+                 "override source version does not match the lock")
+        messages.append(f"Component override: {item['module']} {item['version']} ({item['source_commit']})")
+
     notices_path = repository / "THIRD_PARTY_NOTICES.md"
     _require(notices_path.is_file(), "THIRD_PARTY_NOTICES.md is missing")
     notices = notices_path.read_text(encoding="utf-8")
@@ -343,6 +420,7 @@ def build_compatibility_manifest(lock: Mapping[str, Any], release_tag: str) -> d
             "bundle_release_commit": bundle["release_commit"],
             "vendored_git_tree_sha": bundle["vendored_git_tree_sha"],
             "mpy_cross_version": compiler["version"],
+            "component_overrides": copy.deepcopy(bundle.get("component_overrides", [])),
         },
     }
 
@@ -382,6 +460,7 @@ def build_release_manifest(
             "vendored_git_tree_sha": bundle["vendored_git_tree_sha"],
             "source_asset": copy.deepcopy(dict(bundle["source_asset"])),
             "precompiled_asset": copy.deepcopy(dict(bundle["precompiled_asset"])),
+            "component_overrides": copy.deepcopy(bundle.get("component_overrides", [])),
         },
         "mpy_cross": {
             "version": compiler["version"],
@@ -477,25 +556,60 @@ def parse_upstream_release(lock: Mapping[str, Any], payload: Any) -> dict[str, A
     }
 
 
+def _upstream_retry_delay(exc: urllib.error.HTTPError, attempt: int) -> float | None:
+    headers = exc.headers or {}
+    rate_limited = exc.code == 429 or (
+        exc.code == 403
+        and (headers.get("X-RateLimit-Remaining") == "0" or headers.get("Retry-After") is not None)
+    )
+    if not rate_limited and exc.code not in (500, 502, 503, 504):
+        return None
+    try:
+        if headers.get("Retry-After") is not None:
+            return max(1, int(headers["Retry-After"]))
+        if rate_limited and headers.get("X-RateLimit-Remaining") == "0":
+            return max(1, int(headers["X-RateLimit-Reset"]) - time.time() + 1)
+    except (ValueError, TypeError, KeyError):
+        pass
+    # GitHub asks for at least a minute when a rate-limit response lacks a reset.
+    return (60 if rate_limited else 1) * (2 ** attempt)
+
+
 def fetch_upstream_release(lock: Mapping[str, Any], *, timeout: float = 20.0) -> dict[str, Any]:
     validate_lock(lock)
     monitor = _mapping(lock["monitor"], "monitor")
     url = _string(monitor["release_api"], "monitor.release_api")
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "KnowCO2-Firmware/dependency-monitor",
-            "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            final = urllib.parse.urlparse(response.geturl())
-            _require(final.scheme == "https" and final.hostname == "api.github.com", "dependency metadata redirected to an unapproved host")
-            raw = response.read(4 * 1024 * 1024 + 1)
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
-        raise DependencyPolicyError(f"Could not query the official Adafruit bundle release: {exc}") from exc
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "KnowCO2-Firmware/dependency-monitor",
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
+    }
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        _require("\r" not in token and "\n" not in token, "GITHUB_TOKEN contains a newline")
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(url, headers=headers)
+    opener = urllib.request.build_opener(_GitHubAPIOnlyRedirect())
+    remaining_wait = 120.0
+    for attempt in range(3):
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                _require(_is_github_api_url(response.geturl()), "dependency metadata redirected to an unapproved host")
+                raw = response.read(4 * 1024 * 1024 + 1)
+            break
+        except urllib.error.HTTPError as exc:
+            delay = _upstream_retry_delay(exc, attempt)
+            message = f"Official Adafruit bundle query failed with HTTP {exc.code}"
+            exc.close()
+        except (OSError, urllib.error.URLError, TimeoutError):
+            delay = float(2 ** attempt)
+            message = "Official Adafruit bundle query failed due to a network error"
+        if delay is None or attempt == 2:
+            raise DependencyPolicyError(message + f" after {attempt + 1} attempt(s)") from None
+        if delay > remaining_wait:
+            raise DependencyPolicyError(message + "; retry/reset wait exceeds the 120-second budget; retry later") from None
+        time.sleep(delay)
+        remaining_wait -= delay
     _require(len(raw) <= 4 * 1024 * 1024, "dependency metadata response is unexpectedly large")
     try:
         payload = json.loads(raw.decode("utf-8"))

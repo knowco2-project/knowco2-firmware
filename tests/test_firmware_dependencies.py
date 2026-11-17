@@ -4,12 +4,18 @@
 from __future__ import annotations
 
 import copy
+from contextlib import ExitStack
+from email.message import Message
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +36,7 @@ class FirmwareDependencyPolicyTests(unittest.TestCase):
         MODULE.validate_lock(self.lock)
         self.assertEqual(
             MODULE.calculated_library_set_id(self.lock),
-            "cp10.2.1-bundle20260520-3a88e2948952",
+            "cp10.2.1-bundle20260520-0d96c38d9b14",
         )
 
     def test_runtime_and_bundle_major_must_match(self) -> None:
@@ -66,7 +72,7 @@ class FirmwareDependencyPolicyTests(unittest.TestCase):
         self.assertEqual(manifest["firmware_version"], "RC-test")
         self.assertEqual(
             manifest["library_bundle"]["vendored_git_tree_sha"],
-            "3a88e2948952a8f80d2da6cf5b42854755a8ed3f",
+            "0d96c38d9b1404c1cd19ca483f2f4fbad451df13",
         )
         self.assertEqual(
             manifest["mpy_cross"]["source_commit"],
@@ -74,6 +80,82 @@ class FirmwareDependencyPolicyTests(unittest.TestCase):
         )
         self.assertEqual(manifest["artifacts"]["source_code"], "knowco2-source-v1.2.3.zip")
         self.assertEqual(manifest["artifacts"]["development"], "knowco2-dev-v1.2.3.zip")
+
+    def test_manifests_include_component_provenance(self) -> None:
+        expected = self.lock["library_bundle"]["component_overrides"]
+        build = MODULE.build_release_manifest(self.lock, "v1.2.3")
+        compatibility = MODULE.build_compatibility_manifest(self.lock, "v1.2.3")
+        self.assertEqual(build["library_bundle"]["component_overrides"], expected)
+        self.assertEqual(compatibility["dependency_lock"]["component_overrides"], expected)
+        build["library_bundle"]["component_overrides"][0]["version"] = "0.0.0"
+        self.assertEqual(expected[0]["version"], "1.4.13")
+
+    def test_duplicate_component_overrides_are_rejected(self) -> None:
+        invalid = copy.deepcopy(self.lock)
+        invalid["library_bundle"]["component_overrides"] *= 2
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "duplicate"):
+            MODULE.validate_lock(invalid)
+
+    def test_component_override_cannot_target_another_module(self) -> None:
+        invalid = copy.deepcopy(self.lock)
+        invalid["library_bundle"]["component_overrides"][0]["path"] = "adafruit_scd30.mpy"
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "inventoried module"):
+            MODULE.validate_lock(invalid)
+
+    def test_override_asset_must_match_runtime_major(self) -> None:
+        invalid = copy.deepcopy(self.lock)
+        asset = invalid["library_bundle"]["component_overrides"][0]["precompiled_asset"]
+        asset["filename"] = asset["filename"].replace("10.x", "9.x")
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "CircuitPython major"):
+            MODULE.validate_lock(invalid)
+
+    def test_override_assets_must_match_release_and_repository(self) -> None:
+        invalid = copy.deepcopy(self.lock)
+        asset = invalid["library_bundle"]["component_overrides"][0]["source_asset"]
+        asset["url"] = asset["url"].replace("/1.4.13/", "/latest/")
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "pinned repository and release"):
+            MODULE.validate_lock(invalid)
+
+    def test_override_payload_and_source_are_independently_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock = copy.deepcopy(self.lock)
+            bundle = lock["library_bundle"]
+            item = bundle["component_overrides"][0]
+            shutil.copytree(REPOSITORY_ROOT / bundle["vendored_path"], root / bundle["vendored_path"])
+            for path in (lock["circuitpython"]["checked_in_path"], item["source_path"], "THIRD_PARTY_NOTICES.md"):
+                destination = root / path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(REPOSITORY_ROOT / path, destination)
+            MODULE.verify_repository(root, lock)
+            source = root / item["source_path"]
+            original = source.read_bytes()
+            source.write_bytes(original + b"\n# drift\n")
+            with self.assertRaisesRegex(MODULE.DependencyPolicyError, "source SHA-256"):
+                MODULE.verify_repository(root, lock)
+            source.write_bytes(original)
+            binary = root / bundle["vendored_path"] / item["path"]
+            binary.write_bytes(binary.read_bytes() + b"drift")
+            # Even if someone refreshes the overall tree, the release pin must
+            # still reject a binary different from the approved upstream asset.
+            bundle["vendored_git_tree_sha"] = MODULE._git_tree_sha(binary.parent)
+            bundle["library_set_id"] = MODULE.calculated_library_set_id(lock)
+            with self.assertRaisesRegex(MODULE.DependencyPolicyError, "MPY SHA-256"):
+                MODULE.verify_repository(root, lock)
+
+    def test_complete_image_copies_the_pinned_driver(self) -> None:
+        spec = importlib.util.spec_from_file_location("image_builder", REPOSITORY_ROOT / "tools/build_device_image.py")
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        bundle = self.lock["library_bundle"]
+        item = bundle["component_overrides"][0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "lib").mkdir()
+            target = root / "lib" / item["path"]
+            target.write_bytes(b"old installed driver")
+            builder.copy_locked_libraries(REPOSITORY_ROOT / bundle["vendored_path"], root)
+            self.assertEqual(MODULE.hashlib.sha256(target.read_bytes()).hexdigest(), item["sha256"])
 
     def test_upstream_release_parser_never_changes_the_lock(self) -> None:
         original = json.dumps(self.lock, sort_keys=True)
@@ -140,6 +222,7 @@ class FirmwareDependencyPolicyTests(unittest.TestCase):
             )
 
             fixture = copy.deepcopy(self.lock)
+            fixture["library_bundle"].pop("component_overrides", None)
             fixture["circuitpython"]["checked_in_path"] = "runtime.uf2"
             fixture["circuitpython"]["checked_in_git_blob_sha"] = MODULE._git_blob_sha(cp_path)
             fixture["library_bundle"]["vendored_path"] = "lib-test"
@@ -159,6 +242,153 @@ class FirmwareDependencyPolicyTests(unittest.TestCase):
             output = Path(directory) / "output.txt"
             with self.assertRaisesRegex(MODULE.DependencyPolicyError, "newline"):
                 MODULE._write_github_pairs(output, {"bad": "first\nsecond"})
+
+
+class UpstreamMonitorRequestTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.lock = MODULE.load_lock(REPOSITORY_ROOT / "dependencies" / "firmware-build-lock.json")
+        self.url = self.lock["monitor"]["release_api"]
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.dict(MODULE.os.environ, {}, clear=True))
+        self.opener = MagicMock()
+        self.build_opener = self.stack.enter_context(
+            patch.object(MODULE.urllib.request, "build_opener", return_value=self.opener)
+        )
+        self.sleep = self.stack.enter_context(patch.object(MODULE.time, "sleep"))
+        self.stack.enter_context(patch.object(MODULE.time, "time", return_value=1000))
+        self.stack.enter_context(patch.object(MODULE, "parse_upstream_release", return_value={"ok": True}))
+        self.response = MagicMock()
+        self.response.__enter__.return_value = self.response
+        self.response.geturl.return_value = self.url
+        self.response.read.return_value = b"{}"
+        self.opener.open.return_value = self.response
+
+    def error(self, code: int, headers=None):
+        message = Message()
+        for key, value in (headers or {}).items():
+            message[key] = value
+        return urllib.error.HTTPError(self.url, code, "upstream failure", message, None)
+
+    def test_existing_token_is_attached_only_to_github_api_request(self) -> None:
+        MODULE.os.environ["GITHUB_TOKEN"] = "test-token-not-a-real-secret"
+        self.assertEqual(MODULE.fetch_upstream_release(self.lock), {"ok": True})
+        request = self.opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, self.url)
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-token-not-a-real-secret")
+        self.assertIsInstance(self.build_opener.call_args.args[0], MODULE._GitHubAPIOnlyRedirect)
+        self.sleep.assert_not_called()
+
+    def test_local_use_without_token_remains_supported(self) -> None:
+        MODULE.fetch_upstream_release(self.lock)
+        self.assertIsNone(self.opener.open.call_args.args[0].get_header("Authorization"))
+
+    def test_token_with_embedded_newline_is_rejected_without_logging_it(self) -> None:
+        MODULE.os.environ["GITHUB_TOKEN"] = "private-test-token\nInjected: value"
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "contains a newline") as caught:
+            MODULE.fetch_upstream_release(self.lock)
+        self.assertNotIn("private-test-token", str(caught.exception))
+        self.opener.open.assert_not_called()
+
+    def test_response_origin_is_checked_as_defense_in_depth(self) -> None:
+        self.response.geturl.return_value = "https://evil.example/"
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "unapproved host"):
+            MODULE.fetch_upstream_release(self.lock)
+        self.response.read.assert_not_called()
+        self.sleep.assert_not_called()
+
+    def test_invalid_json_is_not_retried(self) -> None:
+        self.response.read.return_value = b"not-json"
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "invalid JSON"):
+            MODULE.fetch_upstream_release(self.lock)
+        self.assertEqual(self.opener.open.call_count, 1)
+        self.sleep.assert_not_called()
+
+    def test_unapproved_initial_urls_are_rejected_before_any_request(self) -> None:
+        MODULE.os.environ["GITHUB_TOKEN"] = "private-test-token"
+        for url in (
+            "http://api.github.com/releases/latest",
+            "https://api.github.com.evil.example/releases/latest",
+            "https://user@api.github.com/releases/latest",
+            "https://api.github.com:8443/releases/latest",
+            "https://api.github.com:invalid/releases/latest",
+        ):
+            with self.subTest(url=url):
+                self.lock["monitor"]["release_api"] = url
+                with self.assertRaisesRegex(MODULE.DependencyPolicyError, "GitHub HTTPS API"):
+                    MODULE.fetch_upstream_release(self.lock)
+        self.opener.open.assert_not_called()
+
+    def test_cross_origin_and_downgrade_redirects_are_rejected_before_following(self) -> None:
+        request = urllib.request.Request(self.url, headers={"Authorization": "Bearer private-test-token"})
+        handler = MODULE._GitHubAPIOnlyRedirect()
+        for url in ("https://evil.example/", "http://api.github.com/", "https://api.github.com:8443/"):
+            with self.subTest(url=url):
+                with self.assertRaisesRegex(MODULE.DependencyPolicyError, "unapproved host"):
+                    handler.redirect_request(request, None, 302, "Found", {}, url)
+
+    def test_safe_github_api_redirect_keeps_authentication(self) -> None:
+        request = urllib.request.Request(self.url, headers={"Authorization": "Bearer private-test-token"})
+        redirected = MODULE._GitHubAPIOnlyRedirect().redirect_request(
+            request, None, 302, "Found", {}, "https://api.github.com/repositories/123/releases/latest"
+        )
+        self.assertEqual(redirected.get_header("Authorization"), "Bearer private-test-token")
+
+    def test_primary_rate_limit_waits_until_reset(self) -> None:
+        self.opener.open.side_effect = [
+            self.error(403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1005"}),
+            self.response,
+        ]
+        MODULE.fetch_upstream_release(self.lock)
+        self.sleep.assert_called_once_with(6)
+        self.assertEqual(self.opener.open.call_count, 2)
+
+    def test_retry_after_is_honored(self) -> None:
+        self.opener.open.side_effect = [self.error(429, {"Retry-After": "9"}), self.response]
+        MODULE.fetch_upstream_release(self.lock)
+        self.sleep.assert_called_once_with(9)
+
+    def test_long_reset_fails_without_retrying_early(self) -> None:
+        self.opener.open.side_effect = self.error(
+            403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "4600"}
+        )
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "120-second budget"):
+            MODULE.fetch_upstream_release(self.lock)
+        self.assertEqual(self.opener.open.call_count, 1)
+        self.sleep.assert_not_called()
+
+    def test_rate_limit_without_reset_respects_minimum_minute_and_budget(self) -> None:
+        self.opener.open.side_effect = self.error(429)
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "120-second budget"):
+            MODULE.fetch_upstream_release(self.lock)
+        self.sleep.assert_called_once_with(60)
+        self.assertEqual(self.opener.open.call_count, 2)
+
+    def test_permission_denial_is_not_retried(self) -> None:
+        self.opener.open.side_effect = self.error(403)
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "HTTP 403 after 1 attempt"):
+            MODULE.fetch_upstream_release(self.lock)
+        self.sleep.assert_not_called()
+
+    def test_transient_server_failures_stop_after_three_attempts(self) -> None:
+        self.opener.open.side_effect = self.error(503)
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "HTTP 503 after 3 attempt"):
+            MODULE.fetch_upstream_release(self.lock)
+        self.assertEqual(self.opener.open.call_count, 3)
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [1, 2])
+
+    def test_network_errors_do_not_expose_token_or_raw_exception(self) -> None:
+        MODULE.os.environ["GITHUB_TOKEN"] = "private-test-token"
+        self.opener.open.side_effect = urllib.error.URLError("private-test-token")
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "network error") as caught:
+            MODULE.fetch_upstream_release(self.lock)
+        self.assertNotIn("private-test-token", str(caught.exception))
+        self.assertEqual(self.opener.open.call_count, 3)
+
+    def test_monitor_workflow_passes_existing_token_to_upstream_step(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/dependency-monitor.yml").read_text()
+        step = workflow.split("- name: Check official Adafruit bundle release", 1)[1].split("- name:", 1)[0]
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", step)
 
 
 if __name__ == "__main__":

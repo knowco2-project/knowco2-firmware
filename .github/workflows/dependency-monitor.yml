@@ -35,6 +35,8 @@ jobs:
 
       - name: Check official Adafruit bundle release
         id: bundle
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 tools/firmware_dependencies.py check-upstream \
             --json-output dependency-update.json \

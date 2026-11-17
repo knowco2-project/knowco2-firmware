@@ -14,6 +14,8 @@ directories are always excluded.
 from __future__ import annotations
 
 import argparse
+import ast
+import hashlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,6 +23,55 @@ from pathlib import Path
 EXCLUDED_DIRS = {"__pycache__", ".git"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 ENTRYPOINTS = {"code.py", "boot.py"}
+# SHA-256 of the RSA modulus bytes from the PUBLIC test fixture. Keep the
+# production exclusion independent of mutable TEST_ONLY/KEY_ID labels and of
+# whether the test fixture itself is included in a source distribution.
+PUBLIC_TEST_MODULUS_SHA256 = "5bd126fad5f0037d6ca8f1c0ac6ecee9501be4620db821d6f5d2a9103752f1be"
+
+
+def validate_ota_trust(source_root: Path, allow_test_trust: bool = False) -> None:
+    path = source_root / "knowco2" / "ota_trust.py"
+    if not path.is_file():
+        raise ValueError("OTA trust configuration is missing")
+    fields = {"PUBLIC_KEY_N_HEX", "KEY_ID", "TEST_ONLY", "MIN_SEQUENCE",
+              "BUILD_ID", "LIBRARY_SET_ID", "MPY_ABI"}
+    values = {}
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            continue  # Module docstring; never execute the configuration.
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in fields):
+            raise ValueError("OTA trust must contain only literal configuration assignments")
+        name = node.targets[0].id
+        if name in values:
+            raise ValueError("Duplicate OTA trust assignment: " + name)
+        values[name] = ast.literal_eval(node.value)
+    if values.keys() != fields:
+        raise ValueError("OTA trust configuration is incomplete")
+    key, key_id = values["PUBLIC_KEY_N_HEX"], values["KEY_ID"]
+    if (not isinstance(key, str) or len(key) not in (0, 512)
+            or any(c not in "0123456789abcdefABCDEF" for c in key)
+            or not isinstance(key_id, str) or type(values["TEST_ONLY"]) is not bool
+            or type(values["MIN_SEQUENCE"]) is not int
+            or not 0 <= values["MIN_SEQUENCE"] <= 2147483647):
+        raise ValueError("Invalid literal OTA trust configuration")
+    unprovisioned = (not key and key_id == "unprovisioned" and not values["TEST_ONLY"]
+                     and values["MIN_SEQUENCE"] == 0
+                     and values["BUILD_ID"] == values["LIBRARY_SET_ID"] == values["MPY_ABI"] == "")
+    if not unprovisioned and (
+            not isinstance(values["BUILD_ID"], str) or len(values["BUILD_ID"]) != 40
+            or any(c not in "0123456789abcdef" for c in values["BUILD_ID"])
+            or values["LIBRARY_SET_ID"] != "cp10.2.1-bundle20260520-3a88e2948952"
+            or values["MPY_ABI"] != "C6.0.31"):
+        raise ValueError("Invalid OTA base/dependency/ABI binding")
+    fixture = bool(key) and hashlib.sha256(bytes.fromhex(key)).hexdigest() == PUBLIC_TEST_MODULUS_SHA256
+    if fixture and not values["TEST_ONLY"]:
+        raise ValueError("Public test fixture modulus must never masquerade as production trust")
+    test_labeled = values["TEST_ONLY"] or key_id.startswith("PUBLIC-INSECURE-TEST-")
+    if (fixture or test_labeled) and not allow_test_trust:
+        raise ValueError("TEST ONLY OTA trust is forbidden in a normal device/release image")
+
 
 
 def should_skip(path: Path) -> bool:
@@ -97,6 +148,8 @@ def main() -> int:
     parser.add_argument("--library-root", required=True, type=Path)
     parser.add_argument("--mpy-cross", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
+    parser.add_argument("--allow-test-trust", action="store_true",
+                        help="Explicitly allow public test fixture trust; NEVER for production")
     args = parser.parse_args()
 
     source_root = args.source_root.resolve()
@@ -108,6 +161,8 @@ def main() -> int:
         raise FileNotFoundError(f"mpy-cross not found: {mpy_cross}")
     if not library_root.is_dir():
         raise FileNotFoundError(f"library root not found: {library_root}")
+
+    validate_ota_trust(source_root, args.allow_test_trust)
 
     output_root.mkdir(parents=True, exist_ok=True)
 
