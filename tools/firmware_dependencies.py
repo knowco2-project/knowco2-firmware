@@ -18,6 +18,7 @@ import re
 import shlex
 import stat
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -37,6 +38,27 @@ SAFE_ENV_VALUE = re.compile(r"^[^\r\n]*$")
 
 class DependencyPolicyError(RuntimeError):
     """Raised when the locked firmware dependency policy is invalid."""
+
+
+def _is_github_api_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == "api.github.com"
+            and parsed.port in (None, 443)
+            and parsed.username is None
+            and parsed.password is None
+        )
+    except ValueError:
+        return False
+
+
+class _GitHubAPIOnlyRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # urllib otherwise forwards Authorization before geturl() can check it.
+        _require(_is_github_api_url(newurl), "dependency metadata redirected to an unapproved host")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -182,8 +204,8 @@ def validate_lock(lock: Mapping[str, Any]) -> None:
         _require("{release}" in template, f"release.{key} must contain {{release}}")
 
     monitor = _mapping(lock.get("monitor"), "monitor")
-    monitor_url = urllib.parse.urlparse(_string(monitor.get("release_api"), "monitor.release_api"))
-    _require(monitor_url.scheme == "https" and monitor_url.hostname == "api.github.com", "monitor.release_api must be the GitHub HTTPS API")
+    monitor_url = _string(monitor.get("release_api"), "monitor.release_api")
+    _require(_is_github_api_url(monitor_url), "monitor.release_api must be the GitHub HTTPS API")
     _string(monitor.get("issue_title"), "monitor.issue_title")
 
 
@@ -477,25 +499,60 @@ def parse_upstream_release(lock: Mapping[str, Any], payload: Any) -> dict[str, A
     }
 
 
+def _upstream_retry_delay(exc: urllib.error.HTTPError, attempt: int) -> float | None:
+    headers = exc.headers or {}
+    rate_limited = exc.code == 429 or (
+        exc.code == 403
+        and (headers.get("X-RateLimit-Remaining") == "0" or headers.get("Retry-After") is not None)
+    )
+    if not rate_limited and exc.code not in (500, 502, 503, 504):
+        return None
+    try:
+        if headers.get("Retry-After") is not None:
+            return max(1, int(headers["Retry-After"]))
+        if rate_limited and headers.get("X-RateLimit-Remaining") == "0":
+            return max(1, int(headers["X-RateLimit-Reset"]) - time.time() + 1)
+    except (ValueError, TypeError, KeyError):
+        pass
+    # GitHub asks for at least a minute when a rate-limit response lacks a reset.
+    return (60 if rate_limited else 1) * (2 ** attempt)
+
+
 def fetch_upstream_release(lock: Mapping[str, Any], *, timeout: float = 20.0) -> dict[str, Any]:
     validate_lock(lock)
     monitor = _mapping(lock["monitor"], "monitor")
     url = _string(monitor["release_api"], "monitor.release_api")
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "KnowCO2-Firmware/dependency-monitor",
-            "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            final = urllib.parse.urlparse(response.geturl())
-            _require(final.scheme == "https" and final.hostname == "api.github.com", "dependency metadata redirected to an unapproved host")
-            raw = response.read(4 * 1024 * 1024 + 1)
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
-        raise DependencyPolicyError(f"Could not query the official Adafruit bundle release: {exc}") from exc
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "KnowCO2-Firmware/dependency-monitor",
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
+    }
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        _require("\r" not in token and "\n" not in token, "GITHUB_TOKEN contains a newline")
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(url, headers=headers)
+    opener = urllib.request.build_opener(_GitHubAPIOnlyRedirect())
+    remaining_wait = 120.0
+    for attempt in range(3):
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                _require(_is_github_api_url(response.geturl()), "dependency metadata redirected to an unapproved host")
+                raw = response.read(4 * 1024 * 1024 + 1)
+            break
+        except urllib.error.HTTPError as exc:
+            delay = _upstream_retry_delay(exc, attempt)
+            message = f"Official Adafruit bundle query failed with HTTP {exc.code}"
+            exc.close()
+        except (OSError, urllib.error.URLError, TimeoutError):
+            delay = float(2 ** attempt)
+            message = "Official Adafruit bundle query failed due to a network error"
+        if delay is None or attempt == 2:
+            raise DependencyPolicyError(message + f" after {attempt + 1} attempt(s)") from None
+        if delay > remaining_wait:
+            raise DependencyPolicyError(message + "; retry/reset wait exceeds the 120-second budget; retry later") from None
+        time.sleep(delay)
+        remaining_wait -= delay
     _require(len(raw) <= 4 * 1024 * 1024, "dependency metadata response is unexpectedly large")
     try:
         payload = json.loads(raw.decode("utf-8"))
