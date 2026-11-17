@@ -44,6 +44,8 @@ jobs:
       - name: Run hardware-free behavioral suites
         working-directory: tests
         run: |
+          python3 ../test_sensors.py
+          python3 -m unittest test_scd4x_compatibility.py
           python3 test_firmware_dependencies.py
           python3 test_cloud_heal.py
           python3 test_snappy_ui.py

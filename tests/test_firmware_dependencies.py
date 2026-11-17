@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,7 @@ class FirmwareDependencyPolicyTests(unittest.TestCase):
         MODULE.validate_lock(self.lock)
         self.assertEqual(
             MODULE.calculated_library_set_id(self.lock),
-            "cp10.2.1-bundle20260520-3a88e2948952",
+            "cp10.2.1-bundle20260520-0d96c38d9b14",
         )
 
     def test_runtime_and_bundle_major_must_match(self) -> None:
@@ -66,7 +67,7 @@ class FirmwareDependencyPolicyTests(unittest.TestCase):
         self.assertEqual(manifest["firmware_version"], "RC-test")
         self.assertEqual(
             manifest["library_bundle"]["vendored_git_tree_sha"],
-            "3a88e2948952a8f80d2da6cf5b42854755a8ed3f",
+            "0d96c38d9b1404c1cd19ca483f2f4fbad451df13",
         )
         self.assertEqual(
             manifest["mpy_cross"]["source_commit"],
@@ -74,6 +75,82 @@ class FirmwareDependencyPolicyTests(unittest.TestCase):
         )
         self.assertEqual(manifest["artifacts"]["source_code"], "knowco2-source-v1.2.3.zip")
         self.assertEqual(manifest["artifacts"]["development"], "knowco2-dev-v1.2.3.zip")
+
+    def test_manifests_include_component_provenance(self) -> None:
+        expected = self.lock["library_bundle"]["component_overrides"]
+        build = MODULE.build_release_manifest(self.lock, "v1.2.3")
+        compatibility = MODULE.build_compatibility_manifest(self.lock, "v1.2.3")
+        self.assertEqual(build["library_bundle"]["component_overrides"], expected)
+        self.assertEqual(compatibility["dependency_lock"]["component_overrides"], expected)
+        build["library_bundle"]["component_overrides"][0]["version"] = "0.0.0"
+        self.assertEqual(expected[0]["version"], "1.4.13")
+
+    def test_duplicate_component_overrides_are_rejected(self) -> None:
+        invalid = copy.deepcopy(self.lock)
+        invalid["library_bundle"]["component_overrides"] *= 2
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "duplicate"):
+            MODULE.validate_lock(invalid)
+
+    def test_component_override_cannot_target_another_module(self) -> None:
+        invalid = copy.deepcopy(self.lock)
+        invalid["library_bundle"]["component_overrides"][0]["path"] = "adafruit_scd30.mpy"
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "inventoried module"):
+            MODULE.validate_lock(invalid)
+
+    def test_override_asset_must_match_runtime_major(self) -> None:
+        invalid = copy.deepcopy(self.lock)
+        asset = invalid["library_bundle"]["component_overrides"][0]["precompiled_asset"]
+        asset["filename"] = asset["filename"].replace("10.x", "9.x")
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "CircuitPython major"):
+            MODULE.validate_lock(invalid)
+
+    def test_override_assets_must_match_release_and_repository(self) -> None:
+        invalid = copy.deepcopy(self.lock)
+        asset = invalid["library_bundle"]["component_overrides"][0]["source_asset"]
+        asset["url"] = asset["url"].replace("/1.4.13/", "/latest/")
+        with self.assertRaisesRegex(MODULE.DependencyPolicyError, "pinned repository and release"):
+            MODULE.validate_lock(invalid)
+
+    def test_override_payload_and_source_are_independently_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock = copy.deepcopy(self.lock)
+            bundle = lock["library_bundle"]
+            item = bundle["component_overrides"][0]
+            shutil.copytree(REPOSITORY_ROOT / bundle["vendored_path"], root / bundle["vendored_path"])
+            for path in (lock["circuitpython"]["checked_in_path"], item["source_path"], "THIRD_PARTY_NOTICES.md"):
+                destination = root / path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(REPOSITORY_ROOT / path, destination)
+            MODULE.verify_repository(root, lock)
+            source = root / item["source_path"]
+            original = source.read_bytes()
+            source.write_bytes(original + b"\n# drift\n")
+            with self.assertRaisesRegex(MODULE.DependencyPolicyError, "source SHA-256"):
+                MODULE.verify_repository(root, lock)
+            source.write_bytes(original)
+            binary = root / bundle["vendored_path"] / item["path"]
+            binary.write_bytes(binary.read_bytes() + b"drift")
+            # Even if someone refreshes the overall tree, the release pin must
+            # still reject a binary different from the approved upstream asset.
+            bundle["vendored_git_tree_sha"] = MODULE._git_tree_sha(binary.parent)
+            bundle["library_set_id"] = MODULE.calculated_library_set_id(lock)
+            with self.assertRaisesRegex(MODULE.DependencyPolicyError, "MPY SHA-256"):
+                MODULE.verify_repository(root, lock)
+
+    def test_complete_image_copies_the_pinned_driver(self) -> None:
+        spec = importlib.util.spec_from_file_location("image_builder", REPOSITORY_ROOT / "tools/build_device_image.py")
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        bundle = self.lock["library_bundle"]
+        item = bundle["component_overrides"][0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "lib").mkdir()
+            target = root / "lib" / item["path"]
+            target.write_bytes(b"old installed driver")
+            builder.copy_locked_libraries(REPOSITORY_ROOT / bundle["vendored_path"], root)
+            self.assertEqual(MODULE.hashlib.sha256(target.read_bytes()).hexdigest(), item["sha256"])
 
     def test_upstream_release_parser_never_changes_the_lock(self) -> None:
         original = json.dumps(self.lock, sort_keys=True)
@@ -140,6 +217,7 @@ class FirmwareDependencyPolicyTests(unittest.TestCase):
             )
 
             fixture = copy.deepcopy(self.lock)
+            fixture["library_bundle"].pop("component_overrides", None)
             fixture["circuitpython"]["checked_in_path"] = "runtime.uf2"
             fixture["circuitpython"]["checked_in_git_blob_sha"] = MODULE._git_blob_sha(cp_path)
             fixture["library_bundle"]["vendored_path"] = "lib-test"

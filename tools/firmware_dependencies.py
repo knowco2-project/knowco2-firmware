@@ -95,6 +95,46 @@ def calculated_library_set_id(lock: Mapping[str, Any]) -> str:
     return f"cp{cp_version}-bundle{tag}-{tree_sha[:12]}"
 
 
+def _validate_component_overrides(bundle: Mapping[str, Any]) -> None:
+    """A reviewed module release can replace one file in the base bundle."""
+    overrides = bundle.get("component_overrides", [])
+    _require(isinstance(overrides, list), "component_overrides must be a list")
+    seen = set()
+    for value in overrides:
+        item = _mapping(value, "component override")
+        module = _string(item.get("module"), "override.module")
+        _require(re.fullmatch(r"[a-z][a-z0-9_]*", module) is not None,
+                 "override.module must be a Python module name")
+        _require(module not in seen, "duplicate component override")
+        seen.add(module)
+        version = _string(item.get("version"), "override.version")
+        _version_tuple(version, "override.version")
+        path = _string(item.get("path"), "override.path")
+        _require(path == module + ".mpy" and path in bundle["expected_top_level"],
+                 "override.path must name its inventoried module MPY")
+        source = _safe_relative_path(_string(item.get("source_path"), "override.source_path"),
+                                     "override.source_path")
+        _require(source.suffix == ".py", "override.source_path must name Python source")
+        commit = _string(item.get("source_commit"), "override.source_commit")
+        _require(HEX_40.fullmatch(commit) is not None, "override.source_commit must be a Git SHA")
+        repository = _string(item.get("source_repository"), "override.source_repository")
+        _require(re.fullmatch(r"https://github.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+                 is not None, "override.source_repository must be an HTTPS GitHub repository")
+        for key in ("sha256", "source_sha256"):
+            _require(SHA256.fullmatch(_string(item.get(key), "override." + key)) is not None,
+                     "override." + key + " must be SHA-256")
+        for key in ("source_asset", "precompiled_asset"):
+            asset = _mapping(item.get(key), "override." + key)
+            filename = _string(asset.get("filename"), "override asset filename")
+            suffix = ("-py-" if key == "source_asset" else f"-{bundle['major']}.x-mpy-")
+            _require(Path(filename).name == filename and filename.endswith(suffix + version + ".zip"),
+                     "override asset filename must match version and CircuitPython major")
+            _require(asset.get("url") == repository + "/releases/download/" + version + "/" + filename,
+                     "override asset URL must match its pinned repository and release")
+            _require(SHA256.fullmatch(_string(asset.get("sha256"), "override asset sha256")) is not None,
+                     "override asset sha256 must be SHA-256")
+
+
 def validate_lock(lock: Mapping[str, Any]) -> None:
     _require(lock.get("schema") == LOCK_SCHEMA, f"schema must be {LOCK_SCHEMA}")
     _string(lock.get("hardware_profile"), "hardware_profile")
@@ -151,6 +191,7 @@ def validate_lock(lock: Mapping[str, Any]) -> None:
         digest = _string(asset.get("sha256"), f"library_bundle.{asset_name}.sha256")
         _require(url.scheme == "https" and url.path.endswith(filename), f"library_bundle.{asset_name}.url does not match its filename")
         _require(SHA256.fullmatch(digest) is not None, f"library_bundle.{asset_name}.sha256 must be lowercase SHA-256")
+    _validate_component_overrides(bundle)
     _require(
         _string(bundle.get("library_set_id"), "library_bundle.library_set_id") == calculated_library_set_id(lock),
         "library_bundle.library_set_id does not match the locked runtime, bundle, and vendored tree",
@@ -293,6 +334,20 @@ def verify_repository(repository: Path, lock: Mapping[str, Any]) -> list[str]:
     _require(not wrong_headers, "vendored .mpy ABI header mismatch: " + ", ".join(wrong_headers))
     messages.append(f"Vendored bundle {bundle['tag']}: {len(mpy_files)} .mpy files, tree {current_tree}")
 
+    for item in bundle.get("component_overrides", []):
+        source = repository / item["source_path"]
+        _require(source.is_file() and not source.is_symlink(), "override source is missing or a symlink")
+        _require(hashlib.sha256(source.read_bytes()).hexdigest() == item["source_sha256"],
+                 "override source SHA-256 mismatch: " + item["module"])
+        binary = lib_path / item["path"]
+        _require(hashlib.sha256(binary.read_bytes()).hexdigest() == item["sha256"],
+                 "override MPY SHA-256 mismatch: " + item["module"])
+        match = re.search(r'^__version__\s*=\s*[\"\']([^\"\']+)[\"\']',
+                          source.read_text(encoding="utf-8"), re.MULTILINE)
+        _require(match is not None and match.group(1) == item["version"],
+                 "override source version does not match the lock")
+        messages.append(f"Component override: {item['module']} {item['version']} ({item['source_commit']})")
+
     notices_path = repository / "THIRD_PARTY_NOTICES.md"
     _require(notices_path.is_file(), "THIRD_PARTY_NOTICES.md is missing")
     notices = notices_path.read_text(encoding="utf-8")
@@ -343,6 +398,7 @@ def build_compatibility_manifest(lock: Mapping[str, Any], release_tag: str) -> d
             "bundle_release_commit": bundle["release_commit"],
             "vendored_git_tree_sha": bundle["vendored_git_tree_sha"],
             "mpy_cross_version": compiler["version"],
+            "component_overrides": copy.deepcopy(bundle.get("component_overrides", [])),
         },
     }
 
@@ -382,6 +438,7 @@ def build_release_manifest(
             "vendored_git_tree_sha": bundle["vendored_git_tree_sha"],
             "source_asset": copy.deepcopy(dict(bundle["source_asset"])),
             "precompiled_asset": copy.deepcopy(dict(bundle["precompiled_asset"])),
+            "component_overrides": copy.deepcopy(bundle.get("component_overrides", [])),
         },
         "mpy_cross": {
             "version": compiler["version"],
