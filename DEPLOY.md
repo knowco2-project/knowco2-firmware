@@ -52,6 +52,10 @@ off) rather than crashing — but for normal operation you want the set above.
 
 ## OTA updates map straight onto this layout
 
+Updates need physical presence: hold **A** + **B** for 3 seconds, then enter
+the 6-digit code from the screen on the `/update` page (plus the settings
+password when one is set).
+
 The `/update` page accepts either a single `code.py` or a full `.zip`. The ZIP
 installer now accepts these top-level paths and ignores everything else:
 

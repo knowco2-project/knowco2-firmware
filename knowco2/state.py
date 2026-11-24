@@ -100,6 +100,16 @@ last_scd_sample_ts = 0.0
 # A+B combo hold → physical-presence OTA unlock window.
 # ota_unlock_until is a time.monotonic() deadline; 0.0 means locked.
 ota_unlock_until = 0.0
+# One-time code shown on the screen for the current window ("" = none) and
+# the number of wrong codes submitted against it.
+ota_unlock_code = ""
+ota_code_failures = 0
+# Status-line text for the code, and whether the main loop is showing it.
+ota_code_msg = ""
+ota_code_shown = False
+# Admin-password guessing limits (see config.ADMIN_LOCKOUT_*).
+admin_fail_count = 0
+admin_lock_until = 0.0
 
 # ── Safe-mode recovery diagnostics ──────────────────────────────────
 # Consecutive safemode.py auto-recoveries that preceded this boot

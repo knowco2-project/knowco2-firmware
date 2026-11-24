@@ -402,8 +402,10 @@ def refresh_apinfo_screen():
 
     # Make AP password easier to read *before* the device joins a network.
     # In STA mode we keep the .local line at the normal size.
+    # A password longer than 8 characters at 2x would run into the QR code
+    # (the QR starts at x=120 on the 240 px screen), so draw it at 1x.
     try:
-        if state.wifi_mode == config.WIFI_MODE_AP:
+        if state.wifi_mode == config.WIFI_MODE_AP and len(pw) <= 8:
             W.ap_pass_label.scale = 2
             W.ap_pass_label.anchored_position = (6, 24)
         else:

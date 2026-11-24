@@ -32,8 +32,9 @@ bar is: readable code, tested changes, honest commit messages.
 Service-volume workflow: hold physical button B while pressing Reset to expose
 the `KNOWCO2` volume with host write access; copy your tree; eject properly.
 Serial REPL: `screen /dev/tty.usbmodem* 115200`, Ctrl-C to stop the
-firmware, Ctrl-D to reload. OTA: web UI -> Update, unlocked by admin
-password or holding A+B for 3 s.
+firmware, Ctrl-D to reload. OTA: web UI -> Update, unlocked by holding
+A+B for 3 s and entering the 6-digit code shown on the screen (plus the admin
+password when one is set).
 
 Use the product, company, model, button, and USB names in
 [PRODUCT_NAMING.md](PRODUCT_NAMING.md) for every customer-visible string.

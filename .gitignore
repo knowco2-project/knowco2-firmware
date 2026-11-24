@@ -1,3 +1,11 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# Device runtime state. It holds credentials (setup-AP password, Wi-Fi,
+# cloud secret) and is created by the firmware on first boot. Never commit
+# or ship it.
+settings.json
+settings.json.bak
+settings.json.tmp
+settings.json.new

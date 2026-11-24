@@ -15,7 +15,7 @@ import os
 
 import storage
 
-from . import state, config, runtime
+from . import state, config, runtime, crypto
 from .helpers import log, as_int, clamp_int, rand_token, rand_safe32
 from .languages import SUPPORTED_LANGUAGE_CODES
 
@@ -192,6 +192,16 @@ def load_settings():
         except ValueError:
             pass
 
+    # Legacy firmware stored the admin password in plaintext. Replace it
+    # with the salted hash the first time this firmware loads it.
+    _admin = s.get("admin_password", "") or ""
+    if _admin and not crypto.is_hashed_admin_password(_admin):
+        _hashed = crypto.hash_admin_password(str(_admin))
+        if crypto.is_hashed_admin_password(_hashed):
+            s["admin_password"] = _hashed
+            if loaded:
+                save_settings()
+
     apply_settings()
 
     tm = s.get("temp_mode", "F")
@@ -261,20 +271,80 @@ def save_settings():
 def generate_ap_credentials():
     suffix = rand_token(2)
     ssid = "knowco2-" + suffix
-    pw = rand_safe32(8)
+    pw = rand_safe32(config.AP_PASSWORD_LENGTH)
     return ssid, pw
+
+
+# SHA-256 of setup-AP passwords that were published by mistake (a
+# settings.json committed to the public firmware repository). A device that
+# still carries one gets fresh credentials at boot.
+_BURNED_AP_PASSWORD_SHA256 = (
+    "b287c9aa154a196bc4fd3a5efcbeafc01a50bcce52621a994832453395abaf36",
+)
+_burn_cache = [None, False]  # [last password checked, result]
+
+
+def ap_password_is_burned(pw):
+    """True when *pw* is a setup-AP password known to be public."""
+    if not pw:
+        return False
+    if _burn_cache[0] == pw:
+        return _burn_cache[1]
+    result = False
+    try:
+        import binascii
+        digest = crypto.sha256_bytes(pw.encode("utf-8"))
+        if digest is not None:
+            result = binascii.hexlify(digest).decode("ascii") in _BURNED_AP_PASSWORD_SHA256
+    except Exception:
+        result = False
+    _burn_cache[0] = pw
+    _burn_cache[1] = result
+    return result
 
 
 def ensure_ap_credentials():
     s = state.settings
     ssid = (s.get("ap_ssid", "") or "").strip()
     pw = (s.get("ap_password", "") or "").strip()
-    if len(ssid) < 1 or len(pw) < 8:
+    if len(ssid) < 1 or len(pw) < 8 or ap_password_is_burned(pw):
         new_ssid, new_pw = generate_ap_credentials()
         s["ap_ssid"] = new_ssid
         s["ap_password"] = new_pw
         save_settings()
-        print("Generated AP creds:", new_ssid, new_pw)
+        # Never print the password: the console is reachable in maintenance mode.
+        print("Generated new setup-AP credentials for", new_ssid)
+
+
+def factory_reset():
+    """Erase every stored setting and secret (Wi-Fi, cloud pairing, MQTT /
+    Adafruit IO credentials, admin password, calibration notes). The caller
+    reboots afterwards; the next boot starts from defaults and generates new
+    setup-AP credentials. Returns False when the filesystem is read-only."""
+    ensure_fs_writable()
+    if state.fs_readonly:
+        return False
+    for suffix in ("", ".bak", ".tmp"):
+        try:
+            os.remove(SETTINGS_FILE + suffix)
+        except OSError:
+            pass
+    for suffix in ("", ".bak"):
+        try:
+            os.stat(SETTINGS_FILE + suffix)
+            return False  # still there: do not report a wipe that did not happen
+        except OSError:
+            pass
+    s = state.settings
+    for key in list(s.keys()):
+        del s[key]
+    for key, value in DEFAULT_SETTINGS.items():
+        s[key] = value
+    state.pending_cloud_claim = None
+    state.cloud_activation_request_id = None
+    state.cloud_activation_state = "unconfigured"
+    apply_settings()
+    return True
 
 
 def update_settings_from_params(params):
@@ -333,7 +403,7 @@ def update_settings_from_params(params):
     # be a separate, explicit, physically authorized operation; otherwise an
     # ordinary settings save silently disables authentication.
     if "admin_pw" in params and params["admin_pw"]:
-        s["admin_password"] = params["admin_pw"]
+        s["admin_password"] = crypto.hash_admin_password(params["admin_pw"])
 
     if "lang" in params and params["lang"] in SUPPORTED_LANGUAGE_CODES:
         s["lang"] = params["lang"]
@@ -380,16 +450,11 @@ def update_settings_from_params(params):
     s["colorblind_mode"] = "colorblind_mode" in params
     runtime.apply_color_scheme()
 
-    # Cloud settings
+    # Cloud settings. The upload destination and device secret are NOT
+    # accepted here: they are written only by the activation exchange (or by
+    # editing settings.json in maintenance mode for a self-hosted cloud), so
+    # a form post can never redirect a device's readings.
     s["cloud_enabled"] = "cloud_enabled" in params
-    if "cloud_api_url" in params:
-        s["cloud_api_url"] = params["cloud_api_url"]
-    if "cloud_device_token" in params and params["cloud_device_token"]:
-        s["cloud_device_token"] = params["cloud_device_token"]
-    elif "cloud_device_secret" in params and params["cloud_device_secret"]:
-        s["cloud_device_token"] = params["cloud_device_secret"]
-    elif "cloud_token" in params and params["cloud_token"]:
-        s["cloud_device_token"] = params["cloud_token"]
     if "cloud_interval_sec" in params:
         try: s["cloud_interval_sec"] = int(params["cloud_interval_sec"])
         except Exception: pass

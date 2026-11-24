@@ -20,12 +20,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
 
@@ -42,9 +42,14 @@ jobs:
 
       - name: Get version
         id: version
+        env:
+          # Never interpolate workflow inputs into the script text: pass them
+          # through the environment so they are data, not shell.
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.tag }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_TAG"
           else
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
@@ -61,6 +66,8 @@ jobs:
       - name: Remove __pycache__ created by the compile gate
         run: find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
+      # A release must pass everything a pull request passes (ci.yml),
+      # including the security, provisioning and OTA suites.
       - name: Run behavioral test suites
         working-directory: tests
         run: |
@@ -70,7 +77,26 @@ jobs:
           python3 test_graph_perf.py
           python3 test_buttons.py
           python3 test_web_onboarding.py
+          python3 -m unittest test_api_v1_contract.py
+          python3 test_provisioning.py
           python3 test_product_naming.py
+          python3 test_i18n.py
+          python3 test_mqtt_tls.py
+          python3 test_boot_security.py
+          python3 test_usb_api.py
+          python3 test_security_hardening.py
+
+      - name: Remove __pycache__ created by the test suites
+        run: find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+
+      - name: Run transactional OTA suite in disposable root filesystem
+        working-directory: tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          test "${CODEBUILD_BUILD_ID:-}" != ""
+          test -w /
+          python3 test_ota_staged.py
 
       - name: Verify version.py was bumped for this release
         run: |
@@ -228,8 +254,20 @@ jobs:
           zip -r "../knowco2-full-${VERSION}.zip" .
           cd ..
 
+      - name: Write release checksums
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          sha256sum \
+            "knowco2-ota-${VERSION}.zip" \
+            "knowco2-dev-${VERSION}.zip" \
+            "knowco2-full-${VERSION}.zip" \
+            "knowco2-build-${VERSION}.json" \
+            "knowco2-compatibility-${VERSION}.json" \
+            > "knowco2-SHA256SUMS-${VERSION}.txt"
+          cat "knowco2-SHA256SUMS-${VERSION}.txt"
+
       - name: Upload release artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           tag_name: ${{ steps.version.outputs.VERSION }}
           files: |
@@ -238,3 +276,4 @@ jobs:
             knowco2-full-${{ steps.version.outputs.VERSION }}.zip
             knowco2-build-${{ steps.version.outputs.VERSION }}.json
             knowco2-compatibility-${{ steps.version.outputs.VERSION }}.json
+            knowco2-SHA256SUMS-${{ steps.version.outputs.VERSION }}.txt

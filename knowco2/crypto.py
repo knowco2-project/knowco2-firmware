@@ -44,6 +44,63 @@ def constant_time_equals(a, b):
     return r == 0
 
 
+def sha256_bytes(data):
+    """SHA-256 digest of *data* (bytes), or None when no hash backend exists."""
+    if hashlib is None:
+        return None
+    try:
+        return hashlib.sha256(data).digest()
+    except Exception:
+        return None
+
+
+# Stored admin-password format: "kc2h1$<salt hex>$<sha256(salt + password) hex>".
+# The settings key stays "admin_password", so every "is one configured?" check
+# keeps working and an older firmware fails CLOSED after a downgrade (it would
+# compare against the hash string, never against an empty value).
+ADMIN_HASH_PREFIX = "kc2h1$"
+
+
+def is_hashed_admin_password(stored):
+    return isinstance(stored, str) and stored.startswith(ADMIN_HASH_PREFIX)
+
+
+def hash_admin_password(password):
+    """Return the salted storage form of *password*. Falls back to the
+    password itself when hashing is unavailable (never weaker than before)."""
+    if not password:
+        return ""
+    try:
+        import os
+        salt = binascii.hexlify(os.urandom(8)).decode("ascii")
+        digest = sha256_bytes((salt + password).encode("utf-8"))
+        if digest is None:
+            return password
+        return ADMIN_HASH_PREFIX + salt + "$" + binascii.hexlify(digest).decode("ascii")
+    except Exception:
+        return password
+
+
+def verify_admin_password(provided, stored):
+    """Constant-time check of *provided* against a stored admin password in
+    either the salted-hash form or the legacy plaintext form."""
+    if not stored or not provided:
+        return False
+    if is_hashed_admin_password(stored):
+        parts = stored.split("$")
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            return False
+        try:
+            digest = sha256_bytes((parts[1] + provided).encode("utf-8"))
+        except Exception:
+            return False
+        if digest is None:
+            return False
+        return constant_time_equals(
+            binascii.hexlify(digest).decode("ascii"), parts[2])
+    return constant_time_equals(provided, stored)
+
+
 def b64encode_bytes(raw):
     try:
         import base64
