@@ -16,7 +16,7 @@ import gc
 import json
 
 from .. import state, config, version, runtime
-from .. import crypto
+from .. import access
 from .. import settings as settings_mod
 from ..net import wifi as wifi_mod
 from ..helpers import log, as_int, clamp_int, rand_token
@@ -33,6 +33,7 @@ from .http_util import (
     send_all, build_response, make_json_response, make_html_response,
     parse_query, url_decode, read_request_head, read_request_body,
     stream_request_body_to_file, request_source_allowed, CAPTIVE_PATHS_204,
+    request_head_complete,
 )
 
 try:
@@ -152,31 +153,28 @@ def _save_or_restore(changes):
 
 
 # ── Auth helpers ─────────────────────────────────────────────────────
+# The policy lives in knowco2/access.py (hardware-free, unit-tested).
 def check_admin_password(provided):
-    """Constant-time check of `provided` against the configured admin
-    password. Returns False when no admin password is set."""
-    admin_pw = state.settings.get("admin_password", "") or ""
-    if not admin_pw:
-        return False
-    return crypto.constant_time_equals(provided or "", admin_pw)
+    """Constant-time, rate-limited check of `provided` against the
+    configured admin password. Returns False when no admin password is set."""
+    return access.check_admin_password(provided)
 
 
 def ota_unlock_active():
-    """True while the physical-presence OTA window (A+C hold) is open."""
-    try:
-        return bool(state.ota_unlock_until) and \
-            time.monotonic() < state.ota_unlock_until
-    except Exception:
-        return False
+    """True while the physical-presence window (A + B hold) is open."""
+    return access.unlock_active()
 
 
 def ota_authorized(params):
-    """OTA writes require the admin password (when set) OR a live
-    physical-presence unlock — NEVER neither. An empty admin password no
-    longer means open OTA."""
-    if check_admin_password(params.get("pw", "")):
-        return True
-    return ota_unlock_active()
+    """Firmware installs need proof of physical presence EVERY time: the
+    A + B window must be open and the request must quote the one-time code
+    shown on the device screen. A configured admin password is required in
+    addition, never instead — a password alone cannot install firmware."""
+    if not access.unlock_active():
+        return False
+    if access.admin_password_set() and not check_admin_password(params.get("pw", "")):
+        return False
+    return access.unlock_code_ok(params.get("code", ""))
 
 
 # ----------------------------------------------------------------------
@@ -493,6 +491,48 @@ def handle_api_cloud_enabled_route(conn, method, payload):
     })
 
 
+def handle_api_factory_reset_route(conn, method, payload):
+    """Erase every stored setting and secret, then reboot into setup mode.
+
+    Authority is physical presence only: the A + B window plus the code on
+    the screen. The admin password is deliberately NOT required — this is the
+    recovery path for a forgotten password and for wiping a unit before it
+    changes hands. Cloud account ownership is not released here."""
+    if method != b"POST":
+        _api_error(conn, 405, "method_not_allowed", "Use POST")
+        return
+    if sorted(payload.keys()) != ["code", "confirm"] or payload.get("confirm") != "ERASE":
+        _api_error(conn, 422, "invalid_request", "Provide code and confirm=ERASE")
+        return
+    if not access.unlock_code_ok(payload.get("code")):
+        _api_error(
+            conn, 403, "physical_unlock_required",
+            "Hold A + B on the device and enter the 6-digit code it shows",
+        )
+        return
+    if not settings_mod.factory_reset():
+        _api_error(conn, 503, "storage_unavailable", "Settings could not be erased")
+        return
+    access.close_unlock_window()
+    _send_json(conn, {
+        "schema_version": API_SCHEMA_VERSION,
+        "ok": True,
+        "factory_reset": True,
+        "rebooting": True,
+    })
+    runtime.show_status("Factory reset")
+    try:
+        conn.close()  # let the client see the answer before the reboot
+    except Exception:
+        pass
+    time.sleep(1.5)
+    try:
+        if microcontroller is not None:
+            microcontroller.reset()
+    except Exception:
+        pass
+
+
 def handle_export_csv_route(conn):
     """Return the in-RAM CO2 history as a downloadable CSV file."""
     try:
@@ -596,7 +636,11 @@ def handle_status_route(conn):
     # Failure forensics (RC-48v3): what exactly failed, and what the heaps
     # looked like at that instant.
     if state.cloud_last_trace:
-        payload["cloud_last_trace"] = state.cloud_last_trace
+        # The traceback names internal paths and lines; /status is readable
+        # by anything on the network, so only show it while the device is
+        # physically unlocked (hold A + B, then reload /status).
+        if ota_unlock_active():
+            payload["cloud_last_trace"] = state.cloud_last_trace
         payload["idf_free_at_fail"] = state.idf_free_at_fail
         payload["idf_largest_at_fail"] = state.idf_largest_at_fail
         payload["mem_free_at_fail"] = state.mem_free_at_fail
@@ -1366,47 +1410,57 @@ def _process_zip_update(conn, zip_path):
 def handle_update_route(conn, params, method=b"GET", raw_headers=b""):
     """OTA firmware update. GET shows the form; POST installs a .py or .zip.
 
-    SECURITY: every OTA operation (file upload, URL download, ZIP) requires
-    either the admin password (constant-time compared) or a live
-    physical-presence unlock (hold buttons A + B for 3 s → 5-minute window).
-    A device with no admin password set is NOT open — physical presence is
-    then the only way in."""
+    SECURITY: every install (file upload, URL download, ZIP) needs proof of
+    physical presence — the A + B window must be open AND the request must
+    quote the one-time code shown on the device screen. When an admin
+    password is configured it is required in addition, never instead: a
+    password alone cannot install firmware, and neither can another host
+    that merely shares the network while the window is open."""
     s = state.settings
-    if not ota_authorized(params):
-        admin_pw_set = bool(s.get("admin_password", "") or "")
+    admin_pw_set = bool(s.get("admin_password", "") or "")
+    if method == b"POST" and params.get("check") == "1":
+        # Cheap pre-flight used by the page before it sends a large file, so
+        # a mistyped code gets a clear answer instead of an aborted upload.
+        _unlocked = ota_unlock_active()
+        _send_json(conn, {
+            "ok": bool(_unlocked and ota_authorized(params)),
+            "unlocked": bool(_unlocked),
+        })
+        return
+    if not ota_unlock_active():
         if method == b"POST":
             # Never stream/accept a body from an unauthorized client.
             _send_ota_result(conn, False,
                 "Unauthorized: OTA is locked. Hold buttons A + B on the "
-                "device for 3 seconds to unlock for 5 minutes"
-                + (", or supply the admin password." if admin_pw_set else "."))
+                "device for 3 seconds; the screen then shows a 6-digit code "
+                "to enter on this page.")
             return
-        pw_form = ""
-        if admin_pw_set:
-            pw_form = """<form method='POST' action='/update'>
-<label>Password<br><input type='password' name='pw'></label><br>
-<button type='submit'>Unlock</button></form>
-<p style='color:#aaa'>or</p>"""
         login_html = """<!DOCTYPE html>
 <html><head><meta charset='utf-8'><title>OTA Update - Locked</title>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
 <style>body{font-family:sans-serif;background:#0b0b0b;color:#eee;margin:0}
 .wrap{max-width:480px;margin:0 auto;padding:16px;text-align:center}
-input{padding:6px;border-radius:4px;border:1px solid #444;background:#111;color:#eee;font-size:14px;width:80%;max-width:260px}
-button{margin-top:16px;padding:8px 16px;border-radius:4px;border:1px solid #00bcd4;background:#00bcd4;color:#000;font-weight:600;cursor:pointer}
 .hint{margin-top:20px;padding:12px;border:1px solid #333;border-radius:6px;background:#151515;text-align:left}
 </style></head><body><div class='wrap'>
-<h1>Know CO&#8322; OTA</h1><p>Firmware updates are locked.</p>
-""" + pw_form + """
+<h1>Know CO&#8322; OTA</h1><p>Firmware updates and factory reset are locked.</p>
 <div class='hint'><strong>Physical unlock:</strong> hold buttons
 <strong>A</strong> and <strong>B</strong> on the device together for
-3&nbsp;seconds. The screen will show &ldquo;OTA unlocked&rdquo; and this page
-will accept updates for 5&nbsp;minutes. Then reload this page.</div>
+3&nbsp;seconds. The screen shows a 6-digit code and this page opens for
+5&nbsp;minutes. Reload this page, then enter that code.</div>
 <p><a href='/' style='color:#00bcd4;'>Back to settings</a></p>
 </div></body></html>"""
         header, body = make_html_response(login_html)
         send_all(conn, header)
         send_all(conn, body)
+        return
+
+    _is_install = method == b"POST" and (
+        params.get("upload") == "1" or "firmware_url" in params)
+    if _is_install and not ota_authorized(params):
+        _send_ota_result(conn, False,
+            "Unauthorized: enter the 6-digit code shown on the device screen"
+            + (" and the settings password" if admin_pw_set else "")
+            + ". Hold A + B again if the code is no longer visible.")
         return
 
     # --- FILE UPLOAD: POST with ?upload=1, raw binary body ---
@@ -1529,6 +1583,14 @@ will accept updates for 5&nbsp;minutes. Then reload this page.</div>
         if not fw_url:
             _send_ota_result(conn, False, "No URL provided.")
             return
+        if not fw_url.lower().startswith("https://"):
+            # A plain-HTTP download can be replaced in transit by anything
+            # on the path. Files on the local network go through the
+            # upload option instead.
+            _send_ota_result(conn, False,
+                "Firmware URLs must start with https://. To install a file "
+                "from this network, use the upload option instead.")
+            return
         if state.wifi_mode != config.WIFI_MODE_STA or wifi is None or not wifi.radio.connected:
             _send_ota_result(conn, False, "Must be in STA (WiFi) mode to download firmware.")
             return
@@ -1543,11 +1605,8 @@ will accept updates for 5&nbsp;minutes. Then reload this page.</div>
             import ssl as _ssl
             import adafruit_requests as _requests
             pool = socketpool.SocketPool(wifi.radio)
-            if fw_url.startswith("https"):
-                _ssl_ctx = _ssl.create_default_context()
-                session = _requests.Session(pool, _ssl_ctx)
-            else:
-                session = _requests.Session(pool)
+            _ssl_ctx = _ssl.create_default_context()
+            session = _requests.Session(pool, _ssl_ctx)
             response = session.get(fw_url, timeout=30)
             if response.status_code != 200:
                 _send_ota_result(conn, False, "HTTP %d fetching firmware." % response.status_code)
@@ -1558,10 +1617,18 @@ will accept updates for 5&nbsp;minutes. Then reload this page.</div>
                     state._wd.timeout = 90
             except Exception:
                 pass
+            # Same ceiling as browser uploads, so a URL can never fill the
+            # flash.
+            _got = 0
+            _too_big = False
             with open(tmp_path, "wb") as f:
                 try:
                     for chunk in response.iter_content(chunk_size=512):
                         if chunk:
+                            _got += len(chunk)
+                            if _got > config.OTA_MAX_BYTES:
+                                _too_big = True
+                                break
                             f.write(chunk)
                             try:
                                 if state._wd is not None:
@@ -1569,8 +1636,22 @@ will accept updates for 5&nbsp;minutes. Then reload this page.</div>
                             except Exception:
                                 pass
                 except AttributeError:
-                    f.write(response.content)
+                    _content = response.content
+                    if len(_content) > config.OTA_MAX_BYTES:
+                        _too_big = True
+                    else:
+                        f.write(_content)
             response.close()
+            if _too_big:
+                try:
+                    import os as _os_big
+                    _os_big.remove(tmp_path)
+                except Exception:
+                    pass
+                _send_ota_result(conn, False,
+                    "Download rejected: larger than %d bytes. Existing "
+                    "firmware unchanged." % config.OTA_MAX_BYTES)
+                return
             try:
                 with open(tmp_path, "rb") as _f:
                     _head = _f.read(64)
@@ -1619,17 +1700,13 @@ will accept updates for 5&nbsp;minutes. Then reload this page.</div>
         return
 
     # --- GET: show the combined update form ---
-    _pw_raw = params.get("pw", "")
-    # The password lands in two different contexts, each with its own
-    # escaping: a single-quoted HTML attribute (entity-escape) and a
-    # single-quoted JS string inside <script> (backslash-escape; entities
-    # are NOT decoded there).
-    pw_attr = (_pw_raw.replace("&", "&amp;").replace("<", "&lt;")
-               .replace(">", "&gt;").replace('"', "&quot;")
-               .replace("'", "&#39;"))
-    pw_js = (_pw_raw.replace("\\", "\\\\").replace("'", "\\'")
-             .replace("<", "\\x3c").replace(">", "\\x3e"))
-    pw_field = ("<input type='hidden' name='pw' value='%s'>" % pw_attr) if _pw_raw else ""
+    # Nothing secret is rendered into this page: the code and (when one is
+    # configured) the settings password are typed here and sent as request
+    # headers / form fields, never in a URL.
+    pw_input = ""
+    if admin_pw_set:
+        pw_input = ("<label>Settings password<br><input type='password' id='ota-pw' "
+                    "autocomplete='current-password'></label>")
     form_html = """<!DOCTYPE html>
 <html><head><meta charset='utf-8'><title>KnowCO2 - OTA Update</title>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
@@ -1639,13 +1716,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0b0b0b;
 h1{color:#00bcd4;margin-top:8px}
 h2{font-size:16px;color:#aaa;margin:20px 0 4px}
 label{display:block;margin-top:10px;font-size:14px}
-input[type=text],input[type=url]{width:100%;box-sizing:border-box;padding:8px;border-radius:4px;border:1px solid #444;background:#111;color:#eee;font-size:14px}
+input[type=text],input[type=url],input[type=password]{width:100%;box-sizing:border-box;padding:8px;border-radius:4px;border:1px solid #444;background:#111;color:#eee;font-size:14px}
 .drop-zone{border:2px dashed #444;border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:border-color .2s;margin-top:8px}
 .drop-zone.dragover,.drop-zone:hover{border-color:#00bcd4}
 .drop-zone input[type=file]{display:none}
 .drop-zone p{margin:4px 0;color:#aaa;font-size:14px}
 .drop-zone .sub{font-size:12px;color:#666;margin-top:4px}
-#upload-btn,#url-btn{margin-top:12px;padding:8px 20px;border-radius:4px;border:1px solid #e53935;background:#e53935;color:#fff;font-weight:600;cursor:pointer;font-size:14px;display:inline-block}
+#upload-btn,#url-btn,#reset-btn{margin-top:12px;padding:8px 20px;border-radius:4px;border:1px solid #e53935;background:#e53935;color:#fff;font-weight:600;cursor:pointer;font-size:14px;display:inline-block}
 #upload-btn:disabled,#url-btn:disabled{opacity:.5;cursor:not-allowed}
 .warn{color:#ffb300;font-size:13px;margin-top:8px}
 .info{background:#111;border:1px solid #333;border-radius:6px;padding:12px 14px;margin-top:10px;font-size:13px;color:#bbb;line-height:1.6}
@@ -1657,6 +1734,13 @@ hr{border:none;border-top:1px solid #333;margin:20px 0}
 </style></head><body><div class='wrap'>
 <h1>OTA Update</h1>
 <p class='warn'>&#9888; Settings are backed up automatically before every update and restored on reboot if needed.</p>
+
+<h2>Authorize</h2>
+<label>6-digit code shown on the device screen<br>
+<input type='text' id='ota-code' inputmode='numeric' autocomplete='off' maxlength='7' placeholder='e.g. 482913'></label>
+""" + pw_input + """
+<div class='info'>The code appeared when you held buttons <strong>A</strong> + <strong>B</strong>.
+Hold them again for a new code if it is no longer on the screen.</div>
 
 <h2>Option 1 &mdash; Upload from your computer</h2>
 <div class='drop-zone' id='drop-zone' onclick="document.getElementById('fw-file-input').click()">
@@ -1678,22 +1762,45 @@ Any file outside those paths is safely ignored.<br>
 </div>
 
 <hr>
-<h2>Option 2 &mdash; Download from a URL (STA mode only)</h2>
-<form method='POST' action='/update'>""" + pw_field + """
-<label>Firmware or package URL<br><input type='url' name='firmware_url' placeholder='http://192.168.1.x/firmware.py'></label>
+<h2>Option 2 &mdash; Download from an HTTPS URL (STA mode only)</h2>
+<form method='POST' action='/update' onsubmit='return fillAuth(this)'>
+<input type='hidden' name='code' value=''><input type='hidden' name='pw' value=''>
+<label>Firmware URL (https only)<br><input type='url' name='firmware_url' placeholder='https://example.com/code.py'></label>
 <button id='url-btn' type='submit'>Download &amp; Install</button>
 </form>
+
+<hr>
+<h2>Factory reset</h2>
+<div class='info'>Erases Wi-Fi, cloud pairing, saved passwords and every setting on this
+device, then reboots into setup mode with a new setup-network password. Use it for a
+forgotten settings password or before the device changes hands. Cloud account
+ownership is not released here.</div>
+<button id='reset-btn' onclick='doFactoryReset()'>Erase &amp; reset</button>
+<div class='progress' id='reset-progress'></div>
 
 <p style='margin-top:20px'><a href='/'>&#8592; Back to Settings</a></p>
 </div>
 <script>
 var _file = null;
-var _pw = '""" + pw_js + """';
 var dz = document.getElementById('drop-zone');
 var fi = document.getElementById('fw-file-input');
 var ub = document.getElementById('upload-btn');
 var pr = document.getElementById('upload-progress');
+var codeEl = document.getElementById('ota-code');
+var pwEl = document.getElementById('ota-pw');
 
+function _code(){
+  var c = codeEl.value.replace(/[^0-9]/g, '');
+  if (!c) { alert('Enter the 6-digit code shown on the device screen.'); codeEl.focus(); }
+  return c;
+}
+function fillAuth(f){
+  var c = _code();
+  if (!c) return false;
+  f.code.value = c;
+  f.pw.value = pwEl ? pwEl.value : '';
+  return true;
+}
 function _label(f){
   var ext = f.name.split('.').pop().toLowerCase();
   var type = ext === 'zip' ? 'package' : 'firmware';
@@ -1711,17 +1818,40 @@ dz.addEventListener('drop', function(e){
 
 function doUpload(){
   if (!_file) return;
+  var c = _code();
+  if (!c) return;
   var ext = _file.name.split('.').pop().toLowerCase();
   var kind = ext === 'zip' ? 'full update package' : 'firmware file';
   if (!confirm('Install ' + _file.name + ' as a ' + kind + '? The device will reboot.')) return;
   ub.disabled = true;
   pr.style.display = 'block';
+  pr.textContent = 'Checking code...';
+  // Ask the device whether the code (and password) are accepted before
+  // sending the file.
+  var pre = new XMLHttpRequest();
+  pre.open('POST', '/update', true);
+  pre.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+  pre.onload = function(){
+    var r = null;
+    try { r = JSON.parse(pre.responseText); } catch (e) {}
+    if (r && r.ok) { sendFile(c); return; }
+    ub.disabled = false;
+    pr.textContent = (r && r.unlocked === false)
+      ? 'Updates are locked. Hold A + B on the device, then enter the new code.'
+      : 'Code or password not accepted. Hold A + B on the device for a new code and try again.';
+  };
+  pre.onerror = function(){ pr.textContent = 'Could not reach the device (network error)'; ub.disabled = false; };
+  pre.send('check=1&code=' + encodeURIComponent(c) + '&pw=' + encodeURIComponent(pwEl ? pwEl.value : ''));
+}
+
+function sendFile(c){
   pr.textContent = 'Uploading ' + _file.name + '...';
-  var url = '/update?upload=1' + (_pw ? '&pw=' + encodeURIComponent(_pw) : '');
   var xhr = new XMLHttpRequest();
-  xhr.open('POST', url, true);
+  xhr.open('POST', '/update?upload=1', true);
   xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-  xhr.onload = function(){ pr.innerHTML = xhr.responseText; };
+  xhr.setRequestHeader('X-KnowCO2-Code', c);
+  if (pwEl && pwEl.value) xhr.setRequestHeader('X-KnowCO2-Password', encodeURIComponent(pwEl.value));
+  xhr.onload = function(){ pr.innerHTML = xhr.responseText; ub.disabled = false; };
   xhr.onerror = function(){ pr.textContent = 'Upload failed (network error)'; ub.disabled = false; };
   xhr.upload.onprogress = function(e){
     if (e.lengthComputable) {
@@ -1733,6 +1863,26 @@ function doUpload(){
     pr.textContent = 'Writing firmware\u2026 do not disconnect';
   };
   xhr.send(_file);
+}
+
+function doFactoryReset(){
+  var c = _code();
+  if (!c) return;
+  if (!confirm('Erase ALL settings on this device? This cannot be undone.')) return;
+  var rp = document.getElementById('reset-progress');
+  rp.style.display = 'block';
+  rp.textContent = 'Erasing...';
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/v1/factory-reset', true);
+  xhr.setRequestHeader('Content-Type', 'application/json');
+  xhr.onload = function(){
+    var ok = false, msg = '';
+    try { var r = JSON.parse(xhr.responseText); ok = !!r.ok; msg = (r.error && r.error.message) || ''; } catch (e) {}
+    rp.textContent = ok ? 'Erased. The device is rebooting into setup mode.'
+                        : ('Reset refused: ' + (msg || 'check the code and try again.'));
+  };
+  xhr.onerror = function(){ rp.textContent = 'Reset failed (network error).'; };
+  xhr.send(JSON.stringify({code: c, confirm: 'ERASE'}));
 }
 </script>
 </body></html>"""
@@ -1771,7 +1921,12 @@ def handle_root_route(conn, params, method=b"GET"):
         admin_pw = ""
     if admin_pw:
         provided_pw = params.get("pw")
-        if not provided_pw or not crypto.constant_time_equals(provided_pw, admin_pw):
+        if not provided_pw or not check_admin_password(provided_pw):
+            lock_note = ""
+            _lock_s = access.admin_lock_remaining()
+            if _lock_s:
+                lock_note = ("<p style='color:#ffb300'>Too many wrong passwords. Try again in "
+                             "%d seconds, or hold A + B on the device to clear the lock.</p>" % _lock_s)
             login_html = """<!DOCTYPE html>
 <html>
 <head>
@@ -1792,11 +1947,11 @@ def handle_root_route(conn, params, method=b"GET"):
   <div class='wrap'>
     <h1>Know CO&#8322;</h1>
     <p>Please enter the settings password to continue.</p>
-    <form method='POST' action='/'>
+    """ + lock_note + """<form method='POST' action='/'>
       <label>Password<br><input type='password' name='pw' autocomplete='off'></label>
       <button type='submit'>Unlock</button>
     </form>
-    <small>If you forget the password, you may need to reset the device to clear it.</small>
+    <small>Forgot it? Hold A + B on the device, open <a href='/update' style='color:#00bcd4'>Firmware Update</a> and use Factory reset.</small>
   </div>
 </body>
 </html>"""
@@ -1927,7 +2082,7 @@ def handle_http_client():
     runtime.show_busy("web")  # RC-52: serving a page can block ~0.1-2.5 s
     try:
         state.last_http_ts = time.monotonic()  # someone is using the web UI
-        data = read_request_head(conn)
+        data = read_request_head(conn, max_bytes=config.HTTP_HEAD_MAX_BYTES)
         if not data:
             try: conn.close()
             except Exception: pass
@@ -1980,6 +2135,17 @@ def handle_http_client():
             send_all(conn, body)
             return
 
+        if method in (b"POST", b"PATCH") and not request_head_complete(data):
+            # The header block was cut off (oversized or stalled). Acting on
+            # it would mean deciding "no Origin header" from a partial head
+            # and reading leftover header bytes as the body.
+            header, body = build_response(
+                431, "text/plain; charset=utf-8",
+                b"Request header block incomplete or too large")
+            send_all(conn, header)
+            send_all(conn, body)
+            return
+
         if method in (b"POST", b"PATCH") and not request_source_allowed(
                 data, _allowed_management_hosts()):
             _api_error(
@@ -1989,6 +2155,13 @@ def handle_http_client():
             return
 
         route, params = parse_query(path)
+
+        if method in (b"POST", b"PATCH"):
+            # State-changing requests take their parameters from the body
+            # only. The query string keeps just the routing flag the OTA
+            # uploader needs, so a link or a cross-site form action can never
+            # carry settings, credentials or a firmware URL.
+            params = {"upload": params["upload"]} if "upload" in params else {}
 
         _is_ota_upload = (route == "/update" and "upload" in params)
         is_api = route == "/api/v1" or route.startswith("/api/v1/")
@@ -2031,6 +2204,16 @@ def handle_http_client():
                 except Exception:
                     pass
 
+        if route == "/update" and method == b"POST":
+            # The uploader's body is the raw firmware file, so its unlock
+            # code and password travel as request headers (never in the URL).
+            _hdr_code = _header_value(data, "x-knowco2-code")
+            if _hdr_code:
+                params["code"] = _hdr_code
+            _hdr_pw = _header_value(data, "x-knowco2-password")
+            if _hdr_pw:
+                params["pw"] = url_decode(_hdr_pw)
+
         if is_api:
             if route == "/api/v1/info":
                 if method not in (b"GET", b"HEAD"):
@@ -2053,6 +2236,8 @@ def handle_http_client():
                 handle_api_cloud_enabled_route(conn, method, api_payload)
             elif route == "/api/v1/onboarding":
                 handle_api_onboarding_route(conn, method, api_payload)
+            elif route == "/api/v1/factory-reset":
+                handle_api_factory_reset_route(conn, method, api_payload)
             else:
                 _api_error(conn, 404, "not_found", "Unknown local API route")
             return

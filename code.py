@@ -26,6 +26,7 @@ except ImportError:
 from knowco2 import state, config, version, runtime, helpers
 from knowco2 import settings as settings_mod
 from knowco2 import battery, ids, sensors, buttons as buttons_mod
+from knowco2 import access
 from knowco2.net import wifi as wifi_mod, ntp as ntp_mod
 from knowco2.telemetry import cloud as cloud_mod, mqtt as mqtt_mod
 from knowco2 import web
@@ -374,6 +375,10 @@ while True:
         W.status_label.text = ""
         state.status_timeout = 0.0
 
+    # Keep the one-time unlock code on the status line while the window is
+    # open; any other status message shows for its usual few seconds first.
+    access.service_code_display(W.status_label, now)
+
     # ── Buttons ─────────────────────────────────────────────────────
     # Drain queued events and dispatch every action that became due, in
     # order. A press that happened during a blocking call earlier in the
@@ -381,10 +386,12 @@ while True:
     for action in buttons.poll():
 
         if action == buttons_mod.AB_HOLD:
-            # A + B held together — physical-presence OTA unlock.
-            state.ota_unlock_until = now + config.OTA_UNLOCK_WINDOW_SECONDS
-            ui.show_status("OTA unlocked for %d min" %
-                           int(config.OTA_UNLOCK_WINDOW_SECONDS // 60))
+            # A + B held together — physical-presence unlock. A fresh
+            # one-time code goes on the screen (never over the network);
+            # firmware installs and factory reset must quote it.
+            _unlock_code = access.open_unlock_window()
+            ui.show_status("OTA code %s - %d min" % (
+                _unlock_code, int(config.OTA_UNLOCK_WINDOW_SECONDS // 60)))
 
         elif action == buttons_mod.A_HOLD:
             # A hold → toggle low-power mode.

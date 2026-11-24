@@ -28,8 +28,11 @@ Download `knowco2-full-vX.Y.Z.zip` from the [latest release](../../releases/late
 
 Download `knowco2-ota-vX.Y.Z.zip` from the [latest release](../../releases/latest).
 
-1. Open `http://knowco2-XXXX.local/update` in a browser on the same network.
-2. Upload the OTA ZIP and wait for the device to apply and reboot.
+1. Hold buttons **A** + **B** on the device for 3 seconds. The screen shows a
+   6-digit code and firmware updates are unlocked for 5 minutes.
+2. Open `http://knowco2-XXXX.local/update` in a browser on the same network.
+3. Enter the code (and the settings password, if you set one), upload the OTA
+   ZIP, and wait for the device to apply and reboot.
 
 ### Option 3 — Source code
 
@@ -75,10 +78,36 @@ writes:
 | `POST /api/v1/onboarding` | Atomic browser/app Wi-Fi plus optional cloud setup |
 | `POST /api/v1/cloud/enabled` | Explicitly enable or disable uploads |
 | `POST /api/v1/cloud/credentials/forget` | Forget local credentials only; does not release cloud ownership |
+| `POST /api/v1/factory-reset` | Erase all stored settings and secrets, then reboot into setup mode; needs the on-screen unlock code |
 
 Provisioning writes are allowed on the physical setup AP. On a shared STA
 network they require both the configured admin password and the temporary
 physical-unlock window.
+
+State-changing requests (`POST`/`PATCH`) take their parameters from the request
+body only; a query string on them is ignored. A request whose header block is
+incomplete or larger than 4 KB is rejected with `431`.
+
+## Security model
+
+- **Physical presence.** Holding **A** + **B** for 3 seconds opens a 5-minute
+  window and shows a one-time 6-digit code on the screen. Firmware installs
+  and factory reset must quote that code, so only someone who can see the
+  device can use the window. Five wrong codes close it.
+- **Settings password (optional).** Stored as a salted hash, never in
+  cleartext. On a shared network it is required for settings changes together
+  with the unlock window, and for firmware installs in addition to the code —
+  never instead of it. Repeated wrong passwords are locked out for 1–15
+  minutes; an A + B hold clears the lock.
+- **Factory reset.** Hold A + B, open `/update`, enter the code and choose
+  *Erase & reset*. This is the recovery path for a forgotten settings password
+  and the way to wipe a unit before it changes hands.
+- **What physical access can still reach.** `settings.json` on the device holds
+  Wi-Fi and service credentials in cleartext, and the maintenance boot (B held
+  at power-up) exposes it over USB. On networks you do not control, give the
+  device a guest or IoT network rather than the main Wi-Fi password.
+- **`settings.json` is device state, not source.** It is git-ignored and
+  excluded from release packages; never copy one between devices.
 
 ---
 
@@ -169,6 +198,7 @@ labels **A**, **B**, and **C**:
 | B | Cycle display mode (Text → Big CO₂ → Graph) |
 | C (short press) | Toggle the measurement and network-information screens |
 | C (hold about 2 seconds) | Switch between setup access-point and Wi-Fi client modes |
+| A + B (hold about 3 seconds) | Unlock firmware update / factory reset for 5 minutes and show the one-time code |
 | B held during power-up/reset | Show the `KNOWCO2` service volume for maintenance |
 
 For firmware contributors only, the internal board-pin mapping is A =
@@ -179,12 +209,14 @@ in customer-facing text.
 
 ## OTA Updates
 
-Navigate to `http://knowco2-XXXX.local/update` (replace `XXXX` with your device's last four ID characters). You can upload:
+Hold **A** + **B** on the device for 3 seconds, then navigate to `http://knowco2-XXXX.local/update` (replace `XXXX` with your device's last four ID characters) and enter the 6-digit code from the screen. You can upload:
 
 - A single `code.py` — replaces the main script only.
 - A full OTA ZIP — installs `code.py`, `boot.py`, the `knowco2/` package, `lib/`, and `assets/` in one shot.
 
 The previous `code.py` is kept as `/code.py.bak` automatically.
+
+Installing from a URL is HTTPS-only and limited to 400 kB, the same ceiling as an upload. Each release publishes a `knowco2-SHA256SUMS-<version>.txt` file; compare a downloaded package against it before installing.
 
 ---
 

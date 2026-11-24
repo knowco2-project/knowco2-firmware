@@ -424,6 +424,14 @@ def cloud_send(payload_dict):
     if not state.cloud_api_url or not state.cloud_device_token:
         return False
 
+    # Readings and their signature must never travel in cleartext, whatever
+    # ends up in settings.json.
+    if not state.cloud_api_url.lower().startswith("https://"):
+        state.cloud_last_http = None
+        state.cloud_last_error = "cloud_api_url must use https"
+        log("cloud_url", "refusing non-HTTPS cloud_api_url", min_interval=60.0)
+        return False
+
     if state.wifi_mode != config.WIFI_MODE_STA:
         return False
 

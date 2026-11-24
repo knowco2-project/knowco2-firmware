@@ -64,6 +64,14 @@ ONBOARDING_CONNECT_DELAY_S = 1.5
 NTP_HOSTS = ("time.cloudflare.com", "time.google.com", "pool.ntp.org")
 NTP_PORT = 123
 NTP_UNIX_DELTA = 2208988800  # seconds between 1900-01-01 and 1970-01-01
+# NTP is unauthenticated. Never accept a time earlier than this firmware
+# line could have been built (2026-11-01 UTC) — it is only ever a lower
+# bound, so a stale value is safe; bump it with releases. Once the clock has
+# been set, a later answer that moves it by more than NTP_MAX_STEP_S must be
+# confirmed by a second server before it is applied.
+NTP_MIN_VALID_UNIX = 1793491200
+NTP_MAX_STEP_S = 3600
+NTP_CONFIRM_TOLERANCE_S = 10
 
 # ── CO2 alert thresholds (defaults; live values are in state.py) ────
 LOW_THRESHOLD_DEFAULT = 800
@@ -115,6 +123,34 @@ B_HOLD_SECONDS = 2.0
 # OTA_UNLOCK_HOLD_SECONDS to open a window of OTA_UNLOCK_WINDOW_SECONDS.
 OTA_UNLOCK_HOLD_SECONDS = 3.0
 OTA_UNLOCK_WINDOW_SECONDS = 300.0
+
+# The window alone is not enough to install firmware or factory-reset: the
+# request must also quote the one-time code that the A + B hold puts on the
+# screen, so another host on the same network cannot use someone else's
+# window. Too many wrong codes close the window.
+OTA_CODE_DIGITS = 6
+OTA_CODE_MAX_ATTEMPTS = 5
+# URL installs are HTTPS-only and capped like browser uploads.
+OTA_MAX_BYTES = 400000
+
+# ── Admin password guessing limits ──────────────────────────────────
+# After ADMIN_LOCKOUT_AFTER consecutive wrong passwords, password checks are
+# refused for ADMIN_LOCKOUT_BASE_S, doubling per further failure up to
+# ADMIN_LOCKOUT_MAX_S. An A + B hold on the device clears the lock.
+ADMIN_LOCKOUT_AFTER = 5
+ADMIN_LOCKOUT_BASE_S = 60
+ADMIN_LOCKOUT_MAX_S = 900
+
+# ── Setup AP credentials ────────────────────────────────────────────
+# Generated setup-AP password length. The info screen draws passwords of up
+# to 8 characters at 2x; longer ones are drawn at 1x so they cannot run into
+# the QR code. Raise this once the 1x layout has been checked on hardware.
+AP_PASSWORD_LENGTH = 8
+
+# ── Local HTTP server ───────────────────────────────────────────────
+# A request whose header block does not END within this many bytes is
+# rejected. Acting on a truncated head would skip the Origin check.
+HTTP_HEAD_MAX_BYTES = 4096
 
 # ── Safe-mode auto-recovery ─────────────────────────────────────────
 # safemode.py reboots out of safe mode up to RECOVERY_MAX_RETRIES

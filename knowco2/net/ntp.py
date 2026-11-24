@@ -51,7 +51,7 @@ def _query_once(host, timeout=1.5):
         if secs == 0:
             return None
         unix = int(secs - config.NTP_UNIX_DELTA)
-        if unix < 1577836800:  # sanity: after 2020-01-01
+        if unix < config.NTP_MIN_VALID_UNIX:  # never earlier than this firmware
             return None
         return unix
     except Exception as e:
@@ -81,10 +81,28 @@ def ntp_sync(force=False):
     if (not force) and state.ntp_synced and (now_mono - state.last_ntp_sync) < config.NTP_SYNC_INTERVAL:
         return True
 
-    for host in config.NTP_HOSTS:
-        unix = _query_once(host)
+    hosts = config.NTP_HOSTS
+    index = 0
+    while index < len(hosts):
+        unix = _query_once(hosts[index])
+        index += 1
         if unix is None:
             continue
+        if state.ntp_synced:
+            # The clock was already set from the network. A single
+            # unauthenticated answer may nudge it, but may not move it far.
+            try:
+                step = abs(unix - int(time.time()))
+            except Exception:
+                step = 0
+            if step > config.NTP_MAX_STEP_S:
+                confirm = None
+                while index < len(hosts) and confirm is None:
+                    confirm = _query_once(hosts[index])
+                    index += 1
+                if confirm is None or abs(confirm - unix) > config.NTP_CONFIRM_TOLERANCE_S:
+                    log("ntp_step", "NTP step of", step, "s not confirmed; ignored", min_interval=60.0)
+                    continue
         try:
             rtc.RTC().datetime = time.localtime(unix)
             state.ntp_synced = True

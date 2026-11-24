@@ -63,8 +63,11 @@ def safe_call(func, *args, **kwargs):
 import os
 import binascii
 
-# Crockford-ish base32 alphabet (no easily-confused chars).
-SAFE32 = "23456789ABCDEFGHJKMNPQRSTUVWXYZU"
+# Human-friendly alphabet: no 0/O and no 1/I/L. That leaves 31 symbols, so
+# tokens are drawn by rejection sampling (a plain `byte & 31` lookup needs 32
+# entries and previously repeated "U", which biased the output).
+SAFE31 = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+SAFE32 = SAFE31  # legacy name kept for external tooling
 
 
 def rand_token(nbytes=4):
@@ -73,6 +76,21 @@ def rand_token(nbytes=4):
 
 
 def rand_safe32(n=8):
-    """Human-readable base32 token (no 0/O/1/I/L confusion)."""
-    b = os.urandom(n)
-    return "".join(SAFE32[bb & 31] for bb in b)
+    """Human-readable token (no 0/O/1/I/L confusion), uniform over SAFE31."""
+    out = []
+    while len(out) < n:
+        for bb in os.urandom(n):
+            v = bb & 31
+            if v < 31 and len(out) < n:
+                out.append(SAFE31[v])
+    return "".join(out)
+
+
+def rand_digits(n=6):
+    """Uniform decimal code, e.g. '048213' (used for the on-screen unlock code)."""
+    out = []
+    while len(out) < n:
+        for bb in os.urandom(n):
+            if bb < 250 and len(out) < n:  # 250 = 25 * 10 -> no modulo bias
+                out.append(chr(48 + (bb % 10)))
+    return "".join(out)

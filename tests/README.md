@@ -14,12 +14,13 @@ espidf, microcontroller). No hardware needed; CI runs them on every PR.
 | `test_api_v1_contract.py` | Platform-neutral Local API v1 validation, strict booleans, claim normalization, and secret-free payloads |
 | `test_provisioning.py` | Write-only browser/app onboarding, AP/physical-write boundary, deferred STA handoff, fixed-origin activation, idempotent retries, and manufacturing/cloud identity separation |
 | `test_product_naming.py` | Production brand/model names, physical A/B/C terminology, and the hidden/maintenance `KNOWCO2` service-volume contract |
+| `test_security_hardening.py` | Security regressions: padded cross-site requests, body-only POST parameters, OTA needs the on-screen code (password never alone), hashed and rate-limited admin password, published setup-AP password replaced, factory reset, HTTPS-only cloud and URL installs, `/status` traceback gating, NTP bounds, pinned CI actions. Writes only to temporary directories |
 
 Run locally from `tests/`:
 
 ```sh
 docker run --rm -v "$PWD/..:/fw:ro" -w /fw/tests python:3.12-slim-bookworm \
-  sh -c "python test_cloud_heal.py && python test_snappy_ui.py && python test_graph_perf.py && python test_buttons.py && python test_web_onboarding.py && python -m unittest test_api_v1_contract.py && python test_provisioning.py && python test_product_naming.py && python test_ota_staged.py"
+  sh -c "python test_cloud_heal.py && python test_snappy_ui.py && python test_graph_perf.py && python test_buttons.py && python test_web_onboarding.py && python -m unittest test_api_v1_contract.py && python test_provisioning.py && python test_product_naming.py && python test_security_hardening.py && python test_ota_staged.py"
 ```
 
 Philosophy: every bug that reached hardware becomes a permanent test.

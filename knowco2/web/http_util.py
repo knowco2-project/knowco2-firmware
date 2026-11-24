@@ -37,6 +37,11 @@ def _authority_host(value):
     return value.split(":", 1)[0]
 
 
+def request_head_complete(request_raw):
+    """True when the blank line that ends the header block was received."""
+    return (b"\r\n\r\n" in request_raw) or (b"\n\n" in request_raw)
+
+
 def request_source_allowed(request_raw, allowed_hosts):
     """Validate browser source headers for a local state-changing request.
 
@@ -45,7 +50,13 @@ def request_source_allowed(request_raw, allowed_hosts):
     cross-site form/fetch requests. Native clients may omit Origin and
     Sec-Fetch-Site, but HTTP/1.1 state changes must always name this device in
     Host.
+
+    A header block that was cut off before its terminating blank line is never
+    allowed: a page can pad the request line so that Origin lands beyond the
+    bytes read, and "Origin absent" must not be inferred from a partial head.
     """
+    if not request_head_complete(request_raw):
+        return False
     allowed = set()
     for value in allowed_hosts or ():
         host = _authority_host(value)
@@ -145,6 +156,7 @@ def build_response(status_code, content_type, body_bytes=b"", cors=False):
         409: "Conflict",
         413: "Payload Too Large",
         422: "Unprocessable Content",
+        431: "Request Header Fields Too Large",
         500: "Internal Server Error",
         503: "Service Unavailable",
     }.get(status_code, "OK")
@@ -250,7 +262,10 @@ def _content_length(headers_only):
     return 0
 
 
-def read_request_head(conn, max_bytes=2048, max_wait=0.6):
+def read_request_head(conn, max_bytes=4096, max_wait=0.6):
+    """Read up to the end of the header block. The result may be incomplete
+    (slow client, oversized head); callers that are about to change state
+    must check request_head_complete() first."""
     data = b""
     start = time.monotonic()
     while (time.monotonic() - start) < max_wait and len(data) < max_bytes:
