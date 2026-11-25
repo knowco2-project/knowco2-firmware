@@ -7,7 +7,7 @@
 
 import binascii
 
-from . import state
+from . import state, version
 from .helpers import rand_token
 
 try:
@@ -21,6 +21,20 @@ except Exception:
     board = None
 
 
+def _application_hwid(uid, board_id, cp_version):
+    if not uid or not any(uid):
+        return None
+    # CircuitPython PR #11494 changed each factory MAC byte from the old
+    # nibble order to canonical order starting in 11.0.0-alpha.2. Our mDNS
+    # name, HA discovery IDs and cloud hardware_id already use the old form.
+    # Keep that public ID stable; leave the native UID / USB serial alone.
+    if (board_id == "adafruit_feather_esp32s3_reverse_tft" and len(uid) == 6
+            and cp_version.startswith("11.")
+            and cp_version not in ("11.0.0-alpha.0", "11.0.0-alpha.1")):
+        uid = bytes(((b & 15) << 4) | (b >> 4) for b in uid)
+    return binascii.hexlify(uid).decode("utf-8").upper()
+
+
 def init_ids():
     try:
         state.board_id_str = getattr(board, "board_id", None)
@@ -29,7 +43,9 @@ def init_ids():
 
     try:
         if microcontroller is not None and hasattr(microcontroller.cpu, "uid"):
-            state.hwid_hex = binascii.hexlify(microcontroller.cpu.uid).decode("utf-8").upper()
+            state.hwid_hex = _application_hwid(
+                microcontroller.cpu.uid, state.board_id_str, version.CP_VERSION
+            )
         else:
             state.hwid_hex = None
     except Exception:

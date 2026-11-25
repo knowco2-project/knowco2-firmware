@@ -14,6 +14,14 @@ def detect_circuitpython_version():
     "unknown" if it cannot be determined."""
     try:
         impl = getattr(_sys, "implementation", None)
+        # The tuple reports 11.0.0 for every 11.0.0 prerelease. The banner
+        # includes the actual tag (e.g. 11.0.0-beta.0) on both 10 and 11.
+        if getattr(impl, "name", None) == "circuitpython":
+            banner = getattr(_sys, "version", "")
+            if "CircuitPython " in banner:
+                tag = banner.split("CircuitPython ", 1)[1].split()
+                if tag:
+                    return tag[0].rstrip(";")
         if impl is not None and hasattr(impl, "version"):
             v = impl.version
             if isinstance(v, tuple) and len(v) >= 3:
