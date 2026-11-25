@@ -42,10 +42,12 @@ def copy_non_python_tree(src_root: Path, dst_root: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def compile_module(mpy_cross: Path, src: Path, dst: Path) -> None:
+def compile_module(mpy_cross: Path, src: Path, dst: Path, device_name: str) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        [str(mpy_cross), "-o", str(dst), str(src)],
+        # Embed the device path for tracebacks. The build host's checkout
+        # path would otherwise change the bytecode for identical source.
+        [str(mpy_cross), "-s", device_name, "-o", str(dst), str(src)],
         check=True,
     )
 
@@ -56,7 +58,7 @@ def compile_python_tree(src_root: Path, dst_root: Path, mpy_cross: Path) -> None
         if should_skip(rel):
             continue
         dst = dst_root / rel.with_suffix(".mpy")
-        compile_module(mpy_cross, src, dst)
+        compile_module(mpy_cross, src, dst, "/" + (Path(src_root.name) / rel).as_posix())
 
 
 def copy_entrypoints(source_root: Path, output_root: Path) -> None:
