@@ -1,5 +1,9 @@
 # KnowCO2 Firmware — CircuitPython
 
+> **Experimental branch — CircuitPython 11.0.0-beta.0, bench devices only.**
+> [Reverse TFT test kit, display comparison and rollback instructions](bench/circuitpython11/README.md).
+> The release installation instructions below describe the production baseline.
+
 KnowCO2-authored firmware is licensed under [MIT](LICENSE). Bundled dependencies remain under their respective upstream licenses; see [LICENSING.md](LICENSING.md) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Overview

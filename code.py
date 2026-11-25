@@ -1,5 +1,5 @@
 # code.py — KnowCO2 firmware entry point
-# Target: Adafruit Feather ESP32-S3 Reverse TFT (CircuitPython 10.x)
+# Target: Adafruit Feather ESP32-S3 Reverse TFT
 #
 # This is the thin application layer. All subsystems live in the `knowco2`
 # package; this file builds the UI, wires the cross-layer hooks, runs the boot
@@ -36,15 +36,14 @@ from knowco2.helpers import log
 #  STARTUP SPLASH (logo-only)  — shown before the main UI is built
 # ======================================================================
 def _show_logo_splash(disp):
-    f = None
     try:
         group = displayio.Group()
         bg_bitmap = displayio.Bitmap(1, 1, 1)
         bg_palette = displayio.Palette(1)
         bg_palette[0] = config.SPLASH_BG
         group.append(displayio.TileGrid(bg_bitmap, pixel_shader=bg_palette))
-        f = open(config.SPLASH_BMP, "rb")
-        odb = displayio.OnDiskBitmap(f)
+        # Both runtimes accept a path; CircuitPython 11 no longer accepts a file.
+        odb = displayio.OnDiskBitmap(config.SPLASH_BMP)
         logo = displayio.TileGrid(odb, pixel_shader=odb.pixel_shader)
         logo.x = (disp.width - odb.width) // 2
         logo.y = (disp.height - odb.height) // 2
@@ -60,9 +59,6 @@ def _show_logo_splash(disp):
             disp.root_group = displayio.Group()
         except Exception:
             pass
-        if f:
-            f.close()
-        gc.collect()
 
 
 try:
@@ -70,6 +66,8 @@ try:
 except Exception:
     pass
 _show_logo_splash(board.DISPLAY)
+# The path-backed bitmap owns its file; collect after the splash group goes out of scope.
+gc.collect()
 
 # Build the UI (this creates the displayio widget tree) AFTER the splash.
 from knowco2 import ui

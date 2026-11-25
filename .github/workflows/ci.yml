@@ -57,6 +57,7 @@ jobs:
           python3 test_mqtt_tls.py
           python3 test_boot_security.py
           python3 test_usb_api.py
+          python3 test_cp11_readiness.py
 
   ota-staged-install:
     name: OTA staged install
